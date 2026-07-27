@@ -1,0 +1,82 @@
+name: release
+
+# Publishes to npm when a v* tag is pushed.
+#
+# Authentication is OIDC "trusted publishing": GitHub mints a short-lived identity token
+# for this exact repository and workflow, and npm verifies it. There is no NPM_TOKEN in
+# this repository's secrets, because there is no token to store, rotate, or leak.
+#
+# One-time setup on npmjs.com, under the package's Settings -> Trusted publisher:
+#   provider   GitHub Actions
+#   repository alebgl77/harnessmeter
+#   workflow   release.yml
+#
+# The very first publish of a brand-new package may still have to be done manually
+# (`npm publish`) so the package exists to attach the trusted publisher to. Every release
+# after that runs from here.
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: verify before publishing
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: tests
+        run: node --test "test/*.test.ts"
+
+      - name: tag must match package.json
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          pkg=$(node -p "require('./package.json').version")
+          if [ "$tag" != "$pkg" ]; then
+            echo "tag v$tag does not match package.json $pkg"
+            exit 1
+          fi
+          echo "version $pkg"
+
+      - name: pack and check the tarball ships no TypeScript
+        run: |
+          npm install --no-package-lock
+          npm pack
+          if tar -tzf harnessmeter-*.tgz | grep -q '\.ts$'; then
+            echo "tarball contains .ts files — they cannot run under node_modules"
+            exit 1
+          fi
+
+  publish:
+    name: publish to npm
+    needs: verify
+    runs-on: ubuntu-latest
+    environment: npm
+    permissions:
+      contents: read
+      id-token: write # required for OIDC trusted publishing
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          registry-url: 'https://registry.npmjs.org'
+
+      # Trusted publishing needs a recent npm; the one bundled with Node may lag.
+      - name: update npm
+        run: npm install -g npm@latest
+
+      - name: install build dependencies
+        run: npm install --no-package-lock
+
+      - name: publish
+        run: npm publish --access public --provenance
