@@ -1,0 +1,46 @@
+{
+  "name": "harnessmeter",
+  "version": "0.1.0",
+  "description": "A profiler for your agentic harness. Price every line of CLAUDE.md, every skill, subagent and MCP server — then find the ones that don't earn their place.",
+  "type": "module",
+  "bin": {
+    "harnessmeter": "src/cli.ts"
+  },
+  "main": "src/cli.ts",
+  "files": [
+    "src",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=22.18"
+  },
+  "scripts": {
+    "start": "node src/cli.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "keywords": [
+    "claude-code",
+    "claude-md",
+    "agent-harness",
+    "context-engineering",
+    "harness-engineering",
+    "profiler",
+    "llm",
+    "mcp",
+    "ai-agents"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/alebgl77/harnessmeter.git"
+  },
+  "homepage": "https://github.com/alebgl77/harnessmeter#readme",
+  "bugs": {
+    "url": "https://github.com/alebgl77/harnessmeter/issues"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "typescript": "^5.7.0"
+  }
+}

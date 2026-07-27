@@ -3,8 +3,9 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/status-pre--alpha-B8873B?style=flat-square" alt="status: pre-alpha">
+  <img src="https://img.shields.io/badge/status-early-B8873B?style=flat-square" alt="status: early">
   <img src="https://img.shields.io/badge/license-MIT-4E9A6B?style=flat-square" alt="license: MIT">
+  <img src="https://img.shields.io/badge/dependencies-0-4E9A6B?style=flat-square" alt="zero dependencies">
   <img src="https://img.shields.io/badge/api_keys-zero-4E9A6B?style=flat-square" alt="zero api keys">
   <img src="https://img.shields.io/badge/network-none-4E9A6B?style=flat-square" alt="no network">
 </p>
@@ -32,6 +33,17 @@ free, forever, regardless of what it produces. Two things follow, and you've fel
 So we give every block a **lease**: a measured price, a measured yield, and a renewal that
 has to be earned.
 
+## Run it
+
+```sh
+npx harnessmeter          # this project
+npx harnessmeter --all    # every project on this machine
+```
+
+Requires Node ≥ 22.18 — the source is TypeScript and Node runs it directly, so there is no
+build step and **no dependencies at all**. It reads `~/.claude/projects/**/*.jsonl` and
+your harness files, writes `.harnessmeter/report.html`, and touches nothing else.
+
 ## What it shows
 
 <p align="center">
@@ -56,8 +68,14 @@ It also moves the headline metric off dollars. The dominant cost of a bloated ha
 **attention dilution and window consumed**, not the invoice. So harnessmeter reports
 **context share** and **dead share** first, and money second.
 
-And it surfaces the counterintuitive result: a 200-token always-on rule can cost more than
-a 3,000-token skill that loads 2% of the time.
+And it surfaces results you would not have guessed:
+
+- A 200-token always-on rule can cost more than a 3,000-token skill that loads 2% of the
+  time. Residency beats size.
+- A skill's real always-on tax is its **frontmatter description**, not its body — the body
+  only loads on use. Pricing the whole file overstates it by an order of magnitude.
+- On the setups measured so far, `CLAUDE.md` is a **minority** of the always-on prefix.
+  MCP tool schemas dominate it. The file everyone argues about is rarely the expensive one.
 
 ## How it measures
 
@@ -121,15 +139,25 @@ a structural guarantee, not a promise.
 
 ## Status
 
-**Pre-alpha. No installable release yet.** This repository is the design and the assets.
+**Early, and honest about it.** The tool runs and produces a real report from real
+transcripts. What ships today is:
 
-The first milestone is deliberately narrow: `npx harnessmeter` → a local HTML report.
-Zero tokens, zero config, zero network. Context flamegraph, lease ledger, dead share, top
-demotion proposals, and the self-reported balance.
+- exact billed-token accounting, including the 5m/1h cache-write split
+- measured always-on prefix, decomposed into harness files vs. residual
+- claim extraction from `CLAUDE.md`, skills, subagents, MCP servers
+- evidence tiers **T0** (presence) and **T1** (consequence)
+- lease ledger, dead share, demotion proposals with receipts, terminal + HTML report
 
-The measurement protocol will be **pre-registered and published before any results are**.
+Not yet: **T2** judgement, **T3** natural experiments over harness git history, **T4** field
+randomisation, and the patch generator. Per-claim token counts are calibrated estimates at
+~3.8 chars/token and are labelled as estimates everywhere they appear; session-level
+figures are exact.
 
-Issues and design critique very welcome — especially on the evidence model.
+The measurement protocol for the higher tiers will be **pre-registered and published before
+any results are**.
+
+Issues and design critique very welcome — especially on the evidence model and on the
+class inference, which is the part most likely to be wrong on someone else's harness.
 
 ## License
 

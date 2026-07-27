@@ -1,0 +1,45 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 640" width="1280" height="640" role="img" aria-label="harnessmeter — your context window is a commons with no rent">
+  <defs>
+    <pattern id="h" width="7" height="7" patternTransform="rotate(45)" patternUnits="userSpaceOnUse">
+      <rect width="7" height="7" fill="#2A1F1C"/>
+      <line x1="0" y1="0" x2="0" y2="7" stroke="#A8503F" stroke-width="3"/>
+    </pattern>
+    <clipPath id="bc"><rect x="96" y="404" width="1088" height="34" rx="5"/></clipPath>
+  </defs>
+
+  <rect width="1280" height="640" fill="#0B0E14"/>
+  <rect x="0" y="0" width="1280" height="5" fill="#E0A93B"/>
+
+  <text x="96" y="150" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="62" letter-spacing="-1.5" fill="#E6EDF3">harness<tspan fill="#E0A93B">meter</tspan></text>
+
+  <text x="96" y="216" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="26" fill="#8B949E">Your context window is a commons with no rent.</text>
+
+  <text x="96" y="292" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="21" fill="#E6EDF3">Price every line of CLAUDE.md, every skill, every MCP server —</text>
+  <text x="96" y="326" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="21" fill="#E6EDF3">then find the ones that don't earn their place.</text>
+
+  <text x="96" y="386" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12" letter-spacing="1.8" fill="#5A636E">ALWAYS-ON CONTEXT, CACHE-WEIGHTED</text>
+
+  <g clip-path="url(#bc)">
+    <rect x="96"  y="404" width="1088" height="34" fill="#161B23"/>
+    <rect x="96"  y="404" width="686"  height="34" fill="url(#h)"/>
+    <rect x="782" y="404" width="185"  height="34" fill="#B8873B"/>
+    <rect x="967" y="404" width="217"  height="34" fill="#4E9A6B"/>
+  </g>
+  <rect x="96" y="404" width="1088" height="34" rx="5" fill="none" stroke="#242C38"/>
+
+  <g font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="16">
+    <rect x="96" y="470" width="13" height="13" fill="url(#h)"/>
+    <text x="119" y="482" fill="#C9713F">63% ballast</text>
+    <rect x="392" y="470" width="13" height="13" fill="#B8873B"/>
+    <text x="415" y="482" fill="#B8873B">17% unproven</text>
+    <rect x="688" y="470" width="13" height="13" fill="#4E9A6B"/>
+    <text x="711" y="482" fill="#4E9A6B">20% load-bearing</text>
+  </g>
+
+  <line x1="96" y1="530" x2="1184" y2="530" stroke="#1C232E"/>
+
+  <text x="96" y="572" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="18" fill="#4E9A6B">npx harnessmeter</text>
+  <text x="96" y="600" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="14" fill="#5A636E">zero API keys · zero network · nothing leaves your machine</text>
+
+  <text x="1184" y="600" text-anchor="end" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="14" fill="#454D57">github.com/alebgl77/harnessmeter</text>
+</svg>
