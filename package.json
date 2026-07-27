@@ -1,6 +1,6 @@
 {
   "name": "harnessmeter",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "A profiler for your agentic harness. Price every line of CLAUDE.md, every skill, subagent and MCP server — then find the ones that don't earn their place.",
   "type": "module",
   "bin": {
@@ -9,17 +9,20 @@
   "main": "src/cli.ts",
   "files": [
     "bin",
-    "src",
+    "dist",
     "README.md",
-    "LICENSE"
+    "LICENSE",
+    "CHANGELOG.md"
   ],
   "engines": {
-    "node": ">=22.18"
+    "node": ">=20"
   },
   "scripts": {
     "start": "node bin/harnessmeter.js",
     "test": "node --test \"test/*.test.ts\"",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "build": "tsc -p tsconfig.build.json",
+    "prepack": "npm run build"
   },
   "keywords": [
     "claude-code",

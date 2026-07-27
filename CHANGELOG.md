@@ -4,6 +4,29 @@ All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.1] — 2026-07-27
+
+First version published to npm. `0.1.0` was tagged but never published, because it could
+not have worked.
+
+### Fixed
+
+- **The package could not run once installed.** Node refuses to strip TypeScript types for
+  files under `node_modules`, so shipping `src/*.ts` meant `npx harnessmeter` failed with
+  `Stripping types is currently unsupported for files under node_modules`. The published
+  package now ships compiled JavaScript (`dist/`), built by `prepack`.
+- Caught by installing the tarball into a clean project before publishing, rather than by
+  a user afterwards. CI now packs, installs and runs the tarball on Node 20 and 24, and
+  fails if any `.ts` file reaches the published artifact.
+
+### Changed
+
+- Runtime requirement drops to **Node ≥ 20** for the published package. A source checkout
+  still runs the TypeScript directly with no build step, which needs Node ≥ 22.18. The
+  entry point detects which it is and reports the right minimum.
+- Still **zero runtime dependencies**. TypeScript is a dev dependency used only to produce
+  the published artifact.
+
 ## [Unreleased]
 
 ### Planned
@@ -55,5 +78,6 @@ First release. Reads real transcripts and produces a real report.
 - **The primary action is demotion, not deletion.** Moving an always-on block to on-demand
   is a large win at near-zero risk. Deletion is the rare case.
 
-[Unreleased]: https://github.com/alebgl77/harnessmeter/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/alebgl77/harnessmeter/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/alebgl77/harnessmeter/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/alebgl77/harnessmeter/releases/tag/v0.1.0

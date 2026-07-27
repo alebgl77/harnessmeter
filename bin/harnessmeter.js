@@ -2,17 +2,29 @@
 /**
  * Entry point.
  *
- * harnessmeter ships TypeScript and lets Node run it directly — no build step, no
- * dependencies. That requires native type stripping, which landed unflagged in Node 22.18.
- * On anything older the import fails with a raw syntax error, so we check first and say
- * something useful instead.
+ * Two ways in:
+ *
+ *   - Installed from npm: `dist/` is present and this loads compiled JavaScript. Node
+ *     refuses to strip types for anything under node_modules, so a published package
+ *     cannot ship TypeScript and expect it to run. Works on Node 20+.
+ *
+ *   - A git checkout: no `dist/`, so this loads `src/*.ts` directly and Node strips the
+ *     types itself. No build step while developing, but that needs Node 22.18+, where
+ *     stripping is unflagged.
+ *
+ * Either way the version is checked first, so nobody meets a bare syntax error.
  */
 
-const MIN = [22, 18, 0];
+import { existsSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 
-function parse(v) {
-  return String(v).split('.').map((x) => parseInt(x, 10) || 0);
-}
+const DIST = new URL('../dist/cli.js', import.meta.url);
+const SOURCE = new URL('../src/cli.ts', import.meta.url);
+
+const compiled = existsSync(fileURLToPath(DIST));
+const MIN = compiled ? [20, 0, 0] : [22, 18, 0];
+
+const parse = (v) => String(v).split('.').map((x) => parseInt(x, 10) || 0);
 
 function older(a, b) {
   for (let i = 0; i < 3; i++) {
@@ -22,20 +34,22 @@ function older(a, b) {
   return false;
 }
 
-const current = parse(process.versions.node);
-
-if (older(current, MIN)) {
+if (older(parse(process.versions.node), MIN)) {
+  const need = MIN.join('.');
   process.stderr.write(
-    `\n  harnessmeter needs Node ${MIN.join('.')} or newer — you are on ${process.versions.node}.\n\n` +
-      `  It ships TypeScript with zero dependencies and no build step, which relies on\n` +
-      `  Node's native type stripping (unflagged since 22.18).\n\n` +
+    `\n  harnessmeter needs Node ${need} or newer — you are on ${process.versions.node}.\n\n` +
+      (compiled
+        ? ''
+        : `  You are running from a source checkout, which relies on Node's native\n` +
+          `  TypeScript stripping (unflagged since 22.18). The published package ships\n` +
+          `  compiled JavaScript and runs on Node 20.\n\n`) +
       `    nvm install 22 && nvm use 22\n` +
       `    npx harnessmeter\n\n`,
   );
   process.exit(1);
 }
 
-import('../src/cli.ts').catch((err) => {
+import(compiled ? DIST.href : SOURCE.href).catch((err) => {
   process.stderr.write(`\n  harnessmeter failed to start: ${err?.message ?? err}\n\n`);
   process.exit(1);
 });

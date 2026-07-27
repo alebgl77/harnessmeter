@@ -42,9 +42,13 @@ npx harnessmeter --all    # every project on this machine
 npx harnessmeter --t2     # escalate the unproven claims (see below)
 ```
 
-Requires Node ≥ 22.18 — the source is TypeScript and Node runs it directly, so there is no
-build step and **no dependencies at all**. It reads `~/.claude/projects/**/*.jsonl` and
-your harness files, writes `.harnessmeter/report.html`, and touches nothing else.
+Requires Node ≥ 20 and has **no runtime dependencies at all**. It reads
+`~/.claude/projects/**/*.jsonl` and your harness files, writes `.harnessmeter/report.html`,
+and touches nothing else.
+
+<sub>The published package ships compiled JavaScript, because Node refuses to strip types
+under <code>node_modules</code>. A source checkout has no build step — Node runs the
+TypeScript directly — which needs Node ≥ 22.18.</sub>
 
 ## What it shows
 
@@ -199,13 +203,17 @@ class inference, which is the part most likely to be wrong on someone else's har
 Development:
 
 ```sh
-node --test "test/*.test.ts"   # no test framework — node:test
-npx tsc --noEmit               # after: npm i --no-save typescript @types/node
+node bin/harnessmeter.js --all   # runs the TypeScript directly, no build
+node --test "test/*.test.ts"     # no test framework — node:test
+npm run typecheck                # tsc --noEmit
+npm run build                    # only needed to produce the publishable package
 ```
 
-CI runs the suite on Node 22.18 and 24 across Linux, macOS and Windows, **with no install
+CI runs the suite on Node 22.18 and 24 across Linux, macOS and Windows **with no install
 step** — if that job ever needs `npm install` to run the tests, the zero-dependency claim
-has broken and the build should say so.
+has broken and the build says so. A separate job packs the tarball, installs it into a
+clean project and runs it, because a package that works from a checkout and fails from
+`node_modules` is the failure mode that matters.
 
 ## License
 

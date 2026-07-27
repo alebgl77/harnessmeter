@@ -76,3 +76,56 @@ jobs:
         run: npm install --no-save --no-package-lock typescript@^5.7 @types/node@^22
       - name: tsc --noEmit
         run: npx tsc --noEmit
+
+  package:
+    # A package that works from a checkout and fails from node_modules is the failure mode
+    # that matters: Node refuses to strip types under node_modules, so the published
+    # artifact must be compiled. This job proves it before anyone runs `npx harnessmeter`.
+    name: packaged install · node ${{ matrix.node }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ['20', '24']
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: build and pack
+        run: |
+          npm install --no-package-lock
+          npm pack
+          mv harnessmeter-*.tgz /tmp/harnessmeter.tgz
+
+      # Re-pin Node so the install is exercised on the version under test, not the builder.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+
+      - name: install the tarball into a clean project and run it
+        run: |
+          mkdir -p /tmp/consumer && cd /tmp/consumer
+          npm init -y >/dev/null
+          npm install /tmp/harnessmeter.tgz
+          ./node_modules/.bin/harnessmeter --help
+
+      - name: no transcripts still exits cleanly from the installed package
+        run: |
+          cd /tmp/consumer
+          set +e
+          out=$(CLAUDE_HOME="$(mktemp -d)" ./node_modules/.bin/harnessmeter 2>&1)
+          code=$?
+          echo "$out"
+          if [ "$code" -ne 1 ]; then echo "expected exit 1, got $code"; exit 1; fi
+
+      - name: the tarball must not contain TypeScript sources
+        run: |
+          if tar -tzf /tmp/harnessmeter.tgz | grep -q '\.ts$'; then
+            echo "published tarball contains .ts files — they cannot run under node_modules"
+            tar -tzf /tmp/harnessmeter.tgz | grep '\.ts$'
+            exit 1
+          fi
+          echo "tarball is compiled JavaScript only"
