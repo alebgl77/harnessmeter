@@ -15,9 +15,10 @@ import { detectAgent } from './agent.ts';
 import { renderTerminal } from './report-term.ts';
 import { renderHtml } from './report-html.ts';
 import { findProjectDir, listProjectDirs, scanSessions } from './transcript.ts';
+import { VERSION } from './version.ts';
 
 const HELP = `
-harnessmeter 0.1.0 — price the leases your context window is carrying
+harnessmeter ${VERSION} — price the leases your context window is carrying
 
   usage: npx harnessmeter [options]
 

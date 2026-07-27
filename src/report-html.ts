@@ -2,6 +2,7 @@
 
 import type { Analysis, Claim, ClaimEvidence } from './types.ts';
 import { naiveRatio } from './pricing.ts';
+import { VERSION } from './version.ts';
 
 const esc = (s: string) =>
   s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
@@ -209,7 +210,7 @@ ${proposals(a)}
 </div>
 
 <footer>
-harnessmeter 0.1.0 · evidence tiers reached in this run: ${a.cost.tier === 'T0/T1/T2' ? 'T0 (presence), T1 (consequence), T2 (judgement)' : 'T0 (presence), T1 (consequence) — run with <code>--t2</code> to escalate unproven claims'}.
+harnessmeter ${VERSION} · evidence tiers reached in this run: ${a.cost.tier === 'T0/T1/T2' ? 'T0 (presence), T1 (consequence), T2 (judgement)' : 'T0 (presence), T1 (consequence) — run with <code>--t2</code> to escalate unproven claims'}.
 T3 natural experiments and T4 field randomisation are not in this release.<br>
 Session-level figures are exact. Per-claim token counts are calibrated estimates at
 ~3.8 chars/token and are labelled as such wherever shown.

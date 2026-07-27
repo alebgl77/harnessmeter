@@ -2,6 +2,7 @@
 
 import type { Analysis } from './types.ts';
 import { naiveRatio } from './pricing.ts';
+import { VERSION } from './version.ts';
 
 const useColor = process.stdout.isTTY && !process.env.NO_COLOR;
 const c = (code: string) => (s: string | number) => (useColor ? `\x1b[${code}m${s}\x1b[0m` : String(s));
@@ -24,7 +25,7 @@ export function renderTerminal(a: Analysis): string {
   const p = (s = '') => L.push(s);
 
   p();
-  p(`  ${bold('harnessmeter')} ${dim('0.1.0')}`);
+  p(`  ${bold('harnessmeter')} ${dim(VERSION)}`);
   p(
     `  ${grey(`${n(a.sessionCount)} sessions · ${n(a.turnCount)} turns · ${a.projects.length} project${a.projects.length === 1 ? '' : 's'}`)}`,
   );
