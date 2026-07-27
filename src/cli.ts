@@ -42,6 +42,20 @@ type Args = {
   t2: boolean; t2Model?: string; yes: boolean; help: boolean;
 };
 
+/**
+ * The agent CLI is spawned with `shell: true` on Windows, which is how a `.cmd` shim gets
+ * resolved. That makes any value reaching argv a potential injection point, so the model
+ * name is constrained to what a model id can actually contain.
+ */
+function safeModel(v: string | undefined): string | undefined {
+  if (!v) return undefined;
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(v)) {
+    process.stderr.write(`\n  Ignoring --t2-model "${v.slice(0, 40)}": not a valid model id.\n`);
+    return undefined;
+  }
+  return v;
+}
+
 function parseArgs(argv: string[]): Args {
   const a: Args = { all: false, limit: 400, json: false, html: true, t2: false, yes: false, help: false };
   for (let i = 0; i < argv.length; i++) {
@@ -53,7 +67,7 @@ function parseArgs(argv: string[]): Args {
     else if (v === '--yes' || v === '-y') a.yes = true;
     else if (v === '--help' || v === '-h') a.help = true;
     else if (v === '--limit') a.limit = Math.max(1, Number(argv[++i]) || 400);
-    else if (v === '--t2-model') a.t2Model = argv[++i];
+    else if (v === '--t2-model') a.t2Model = safeModel(argv[++i]);
     else if (v === '--out') a.out = argv[++i];
   }
   return a;
@@ -167,7 +181,23 @@ async function main() {
 
   if (args.html) {
     const out = args.out ?? path.join(cwd, '.harnessmeter', 'report.html');
-    fs.mkdirSync(path.dirname(out), { recursive: true });
+    const dir = path.dirname(out);
+    fs.mkdirSync(dir, { recursive: true });
+
+    // The report describes your harness — section headings, skill names, MCP servers.
+    // Default output goes in the repo, so make it un-committable by default rather than
+    // relying on the user to remember.
+    if (!args.out) {
+      const ignore = path.join(dir, '.gitignore');
+      if (!fs.existsSync(ignore)) {
+        fs.writeFileSync(
+          ignore,
+          '# harnessmeter output describes your harness — keep it out of git.\n*\n',
+          'utf8',
+        );
+      }
+    }
+
     fs.writeFileSync(out, renderHtml(analysis), 'utf8');
     process.stdout.write(`  report  ${path.relative(cwd, out) || out}\n\n`);
   }

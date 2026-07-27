@@ -12,7 +12,13 @@ It is worth being precise, because this tool reads files that contain your work.
 
 **Writes:**
 
-- `.harnessmeter/report.html` in the current project, and nothing else
+- `.harnessmeter/report.html` in the current project
+- `.harnessmeter/.gitignore` containing `*`, created once, so the report cannot be
+  committed by accident
+- nothing else — unless you pass `--out <path>`, which writes exactly where you point it,
+  creating parent directories if needed. That is the only way harnessmeter writes outside
+  `.harnessmeter/`, and it happens only when you ask for it. Reports written via `--out`
+  are not covered by the generated `.gitignore`.
 
 **Sends:**
 
@@ -24,9 +30,10 @@ It is worth being precise, because this tool reads files that contain your work.
   harnessmeter never holds an API key.
 
 **The generated report contains your harness structure** — section headings, skill names,
-MCP server names — and the counts derived from them. It is written under `.harnessmeter/`,
-which the shipped `.gitignore` excludes. Treat it as you would treat your `CLAUDE.md`, and
-check before pasting one into a public issue.
+MCP server names — and the counts derived from them. It does not contain file contents or
+message text. harnessmeter drops a `.gitignore` next to it so it cannot be committed by
+accident, but treat it as you would treat your `CLAUDE.md`, and check before pasting one
+into a public issue.
 
 ## Reporting a vulnerability
 

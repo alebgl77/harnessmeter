@@ -59,12 +59,19 @@ export function renderTerminal(a: Analysis): string {
 
   // ---- dead share --------------------------------------------------------------
   const attributable = a.claims.filter((x) => x.alwaysOnTokens > 0);
-  p(`  ${amber('DEAD SHARE')}  ${dim(`over ${attributable.length} attributable claims`)}`);
+  const attributedPct =
+    a.medianPrefixTokens > 0 ? (a.harnessEstTokens / a.medianPrefixTokens) * 100 : 0;
+  p(`  ${amber('DEAD SHARE')}  ${dim(`of the harness context we can attribute`)}`);
   p();
   const pct = a.deadSharePct;
   const col = pct > 50 ? rust : pct > 25 ? amber : green;
   p(`    ${col(bar(pct / 100))}  ${bold(pct.toFixed(0) + '%')}`);
-  p(`    ${grey('always-on context with no observable consequence')}`);
+  p(`    ${grey(`of ${n(a.harnessEstTokens)} tok across ${attributable.length} claims`)}`);
+  p();
+  p(
+    `    ${dim(`scope: those claims are ${attributedPct.toFixed(0)}% of your ${n(a.medianPrefixTokens)}-tok prefix.`)}`,
+  );
+  p(`    ${dim(`the other ${n(a.residualTokens)} tok is base prompt + MCP schemas, not judged here.`)}`);
   p();
 
   // ---- ledger ------------------------------------------------------------------

@@ -188,8 +188,9 @@ ${flamegraph(a)}
 <div class="note">Median measured prefix is <strong>${n(a.medianPrefixTokens)} tokens</strong>. At ${a.medianTurnsPerSession} turns per session, prompt caching makes that prefix <strong>${ratio.toFixed(1)}× cheaper</strong> than the tokens-×-turns figure quoted everywhere else. The residual is what we measured but cannot attribute to a file: Claude Code's own system prompt plus MCP tool schemas, whose size is only knowable at runtime.</div>
 
 <h2>DEAD SHARE</h2>
-<div class="card"><div class="k">always-on context with no observable consequence</div>
-<div class="v" style="color:${a.deadSharePct > 50 ? 'var(--rust)' : a.deadSharePct > 25 ? 'var(--amber)' : 'var(--green)'}">${a.deadSharePct.toFixed(0)}%</div></div>
+<div class="card"><div class="k">of attributed harness context, with no observable consequence</div>
+<div class="v" style="color:${a.deadSharePct > 50 ? 'var(--rust)' : a.deadSharePct > 25 ? 'var(--amber)' : 'var(--green)'}">${a.deadSharePct.toFixed(0)}%<small> of ${n(a.harnessEstTokens)} tok</small></div></div>
+<div class="note">This percentage is scoped to the context we can attribute to a file — ${n(a.harnessEstTokens)} tokens, or ${a.medianPrefixTokens > 0 ? ((a.harnessEstTokens / a.medianPrefixTokens) * 100).toFixed(0) : '0'}% of your ${n(a.medianPrefixTokens)}-token prefix. The remaining ${n(a.residualTokens)} tokens are the base system prompt and MCP tool schemas; harnessmeter cannot see inside them, so they are <strong>not</strong> counted as either live or dead. Reporting one number as if it covered the whole prefix would be the exact error this tool exists to correct.</div>
 
 <h2>LEASE LEDGER</h2>
 ${ledger(a)}

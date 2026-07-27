@@ -6,7 +6,7 @@
   "bin": {
     "harnessmeter": "bin/harnessmeter.js"
   },
-  "main": "src/cli.ts",
+  "main": "dist/cli.js",
   "files": [
     "bin",
     "dist",
