@@ -17,7 +17,8 @@
     "node": ">=22.18"
   },
   "scripts": {
-    "start": "node src/cli.ts",
+    "start": "node bin/harnessmeter.js",
+    "test": "node --test \"test/*.test.ts\"",
     "typecheck": "tsc --noEmit"
   },
   "keywords": [

@@ -3,6 +3,7 @@
 </p>
 
 <p align="center">
+  <a href="https://github.com/alebgl77/harnessmeter/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/alebgl77/harnessmeter/ci.yml?branch=main&style=flat-square&label=ci" alt="ci"></a>
   <img src="https://img.shields.io/badge/status-early-B8873B?style=flat-square" alt="status: early">
   <img src="https://img.shields.io/badge/license-MIT-4E9A6B?style=flat-square" alt="license: MIT">
   <img src="https://img.shields.io/badge/dependencies-0-4E9A6B?style=flat-square" alt="zero dependencies">
@@ -184,6 +185,27 @@ any results are**.
 
 Issues and design critique very welcome — especially on the evidence model and on the
 class inference, which is the part most likely to be wrong on someone else's harness.
+
+## Project
+
+| | |
+|---|---|
+| [CONTRIBUTING](CONTRIBUTING.md) | What is most wanted, house rules, how to run the tests |
+| [Measurement dispute](https://github.com/alebgl77/harnessmeter/issues/new?template=measurement_dispute.yml) | The tool gave a verdict you believe is wrong — the most useful issue you can file |
+| [SECURITY](SECURITY.md) | Exactly what it reads, writes and sends; how to report privately |
+| [CHANGELOG](CHANGELOG.md) | What shipped, and the design decisions behind it |
+| [Discussions](https://github.com/alebgl77/harnessmeter/discussions) | Arguments about how yield *should* be measured |
+
+Development:
+
+```sh
+node --test "test/*.test.ts"   # no test framework — node:test
+npx tsc --noEmit               # after: npm i --no-save typescript @types/node
+```
+
+CI runs the suite on Node 22.18 and 24 across Linux, macOS and Windows, **with no install
+step** — if that job ever needs `npm install` to run the tests, the zero-dependency claim
+has broken and the build should say so.
 
 ## License
 

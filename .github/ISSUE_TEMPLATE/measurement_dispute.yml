@@ -1,0 +1,70 @@
+name: Measurement dispute
+description: harnessmeter gave a verdict you believe is wrong
+title: 'measurement: '
+labels: ['measurement', 'needs-triage']
+body:
+  - type: markdown
+    attributes:
+      value: |
+        This is the most valuable kind of issue here. If the tool says a claim is ballast
+        and you know it is load-bearing — or the reverse — that is a bug in the evidence
+        model, not a difference of opinion.
+
+        **You do not need to share your harness.** The shape of the claim and the verdict
+        is enough to start. Please do not paste a full report; it contains your harness
+        structure.
+
+  - type: dropdown
+    id: verdict
+    attributes:
+      label: What did it say?
+      options:
+        - Called it ballast, but it is load-bearing
+        - Called it load-bearing, but it does nothing
+        - Called it unproven, but it is clearly checkable
+        - Protected it as prevention when it is not a prevention rule
+        - Failed to protect a genuine prevention rule
+        - Something else
+    validations:
+      required: true
+
+  - type: input
+    id: tier
+    attributes:
+      label: Evidence tier shown on the verdict
+      placeholder: 'T0, T1, T2 or none'
+    validations:
+      required: true
+
+  - type: textarea
+    id: claim
+    attributes:
+      label: The claim, or a redacted version of it
+      description: >
+        Rewrite it if the real text is sensitive — keep the grammatical shape and the kind
+        of instruction it is.
+      placeholder: '- Always run the migration checklist before touching schema files'
+    validations:
+      required: true
+
+  - type: textarea
+    id: why
+    attributes:
+      label: Why the verdict is wrong
+      description: What actually happens in your sessions that the tool did not see?
+    validations:
+      required: true
+
+  - type: input
+    id: sessions
+    attributes:
+      label: Roughly how many sessions were scanned?
+      placeholder: '120'
+
+  - type: checkboxes
+    id: ack
+    attributes:
+      label: Before submitting
+      options:
+        - label: I have not pasted a full report or any file contents
+          required: true

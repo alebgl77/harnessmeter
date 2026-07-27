@@ -1,0 +1,78 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: test · node ${{ matrix.node }} · ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        node: ['22.18', '24']
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+
+      # No install step: harnessmeter has zero runtime dependencies and Node runs the
+      # TypeScript directly. If this job ever needs `npm install`, that claim has broken.
+      - name: test
+        run: node --test "test/*.test.ts"
+
+      - name: smoke — help
+        run: node bin/harnessmeter.js --help
+
+      - name: smoke — no transcripts exits cleanly
+        shell: bash
+        run: |
+          set +e
+          out=$(CLAUDE_HOME="$(mktemp -d)" node bin/harnessmeter.js 2>&1)
+          code=$?
+          echo "$out"
+          if [ "$code" -ne 1 ]; then echo "expected exit 1, got $code"; exit 1; fi
+          echo "$out" | grep -qi "no claude code transcripts" || { echo "missing guidance"; exit 1; }
+
+  version-guard:
+    name: version guard rejects old node
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: old node gets an explanation, not a syntax error
+        run: |
+          set +e
+          out=$(node bin/harnessmeter.js --help 2>&1)
+          code=$?
+          echo "$out"
+          if [ "$code" -ne 1 ]; then echo "expected exit 1, got $code"; exit 1; fi
+          echo "$out" | grep -q "22.18" || { echo "guard did not name the required version"; exit 1; }
+
+  typecheck:
+    name: typecheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: install typescript only
+        run: npm install --no-save --no-package-lock typescript@^5.7 @types/node@^22
+      - name: tsc --noEmit
+        run: npx tsc --noEmit

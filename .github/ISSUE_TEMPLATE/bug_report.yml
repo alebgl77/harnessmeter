@@ -1,0 +1,65 @@
+name: Bug report
+description: It crashed, hung, or did something it should not
+title: 'bug: '
+labels: ['bug', 'needs-triage']
+body:
+  - type: markdown
+    attributes:
+      value: |
+        If the tool ran but gave a number you disagree with, please use
+        **Measurement dispute** instead — that is tracked separately.
+
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected instead
+    validations:
+      required: true
+
+  - type: textarea
+    id: command
+    attributes:
+      label: The command you ran
+      render: shell
+      placeholder: npx harnessmeter --all --limit 200
+    validations:
+      required: true
+
+  - type: textarea
+    id: output
+    attributes:
+      label: Output or error
+      description: >
+        Redact anything sensitive. Project names, file paths and skill names can appear in
+        harnessmeter output.
+      render: text
+
+  - type: input
+    id: node
+    attributes:
+      label: Node version
+      description: '`node --version` — harnessmeter needs 22.18 or newer'
+      placeholder: v22.18.0
+    validations:
+      required: true
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options: [Linux, macOS, Windows, Other]
+    validations:
+      required: true
+
+  - type: dropdown
+    id: agent
+    attributes:
+      label: Agent CLI installed
+      options: ['Claude Code', 'Codex', 'Both', 'None', 'Other']

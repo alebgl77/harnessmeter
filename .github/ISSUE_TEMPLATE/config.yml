@@ -1,0 +1,11 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Security or privacy report
+    url: https://github.com/alebgl77/harnessmeter/security/advisories/new
+    about: >
+      Report privately if anything could expose data — never in a public issue.
+  - name: Design critique of the evidence model
+    url: https://github.com/alebgl77/harnessmeter/discussions
+    about: >
+      Arguments about how yield should be measured belong in Discussions, where they can
+      stay open. Concrete wrong verdicts belong in a Measurement dispute issue.

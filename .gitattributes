@@ -1,0 +1,15 @@
+# Normalise line endings in the repo, keep native ones in the working copy.
+* text=auto eol=lf
+
+*.ts    text eol=lf
+*.js    text eol=lf
+*.json  text eol=lf
+*.md    text eol=lf
+*.yml   text eol=lf
+*.svg   text eol=lf
+
+*.png   binary
+
+# Keep generated assets out of diffs and language stats.
+assets/*.svg linguist-documentation
+assets/*.png binary linguist-documentation
