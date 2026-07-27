@@ -1,0 +1,40 @@
+# ── Internal / not for publication ──────────────────────────────────
+SPEC.md
+NOTES.md
+STRATEGY.md
+/internal/
+/private/
+*.local.md
+
+# ── Anything that could expose environment or secrets ────────────────
+.env
+.env.*
+*.pem
+*.key
+secrets.*
+.claude/settings.local.json
+.claude/*.local.json
+
+# ── Session transcripts (contain prompts, paths, source code) ────────
+*.jsonl
+/transcripts/
+/sessions/
+
+# ── Tool output (derived from a real repo — never commit) ────────────
+.harnessmeter/
+*.harnessmeter.json
+
+# ── Build & deps ─────────────────────────────────────────────────────
+node_modules/
+dist/
+build/
+coverage/
+*.tsbuildinfo
+.npmrc
+
+# ── OS / editor ──────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp

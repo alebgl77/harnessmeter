@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 330" width="900" height="330" role="img" aria-label="Why naive token-turn arithmetic overstates always-on cost by about 7x">
+  <rect width="900" height="330" rx="10" fill="#0B0E14"/>
+  <rect x="0.5" y="0.5" width="899" height="329" rx="10" fill="none" stroke="#1C232E"/>
+
+  <g font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace">
+    <text x="32" y="46" font-size="13" fill="#E0A93B" letter-spacing="1.4">A 3,400-TOKEN CLAUDE.md OVER A 34-TURN SESSION</text>
+
+    <!-- naive -->
+    <text x="32" y="92" font-size="14" fill="#A8503F">every blog post</text>
+    <text x="32" y="116" font-size="13" fill="#5A636E">3,400 × 34 turns</text>
+    <rect x="260" y="76" width="608" height="30" rx="4" fill="#A8503F" opacity="0.85"/>
+    <text x="856" y="97" font-size="14" fill="#0B0E14" text-anchor="end" font-weight="bold">115,600 tokens</text>
+
+    <!-- correct -->
+    <text x="32" y="184" font-size="14" fill="#4E9A6B">harnessmeter</text>
+    <text x="32" y="208" font-size="13" fill="#5A636E">3,400 × 1.25 write</text>
+    <text x="32" y="228" font-size="13" fill="#5A636E">+ 3,400 × 33 × 0.1 read</text>
+    <rect x="260" y="168" width="81" height="30" rx="4" fill="#4E9A6B"/>
+    <text x="356" y="189" font-size="14" fill="#4E9A6B">15,470 tokens</text>
+
+    <line x1="32" y1="262" x2="868" y2="262" stroke="#1C232E"/>
+
+    <text x="32" y="292" font-size="15" fill="#E6EDF3">Prompt caching makes the stable prefix ~7× cheaper than</text>
+    <text x="32" y="314" font-size="15" fill="#E6EDF3">everyone claims. We are the only tool that does this arithmetic.</text>
+  </g>
+</svg>

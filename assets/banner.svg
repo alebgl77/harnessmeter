@@ -1,0 +1,50 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 340" width="1200" height="340" role="img" aria-label="harnessmeter — a profiler for your agentic harness">
+  <defs>
+    <pattern id="hatch" width="6" height="6" patternTransform="rotate(45)" patternUnits="userSpaceOnUse">
+      <rect width="6" height="6" fill="#2A1F1C"/>
+      <line x1="0" y1="0" x2="0" y2="6" stroke="#A8503F" stroke-width="2.5"/>
+    </pattern>
+    <clipPath id="barclip">
+      <rect x="64" y="214" width="1072" height="26" rx="4"/>
+    </clipPath>
+  </defs>
+
+  <rect width="1200" height="340" rx="14" fill="#0B0E14"/>
+  <rect x="0.5" y="0.5" width="1199" height="339" rx="14" fill="none" stroke="#1C232E"/>
+
+  <!-- wordmark -->
+  <text x="64" y="104" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="46" letter-spacing="-1" fill="#E6EDF3">harness<tspan fill="#E0A93B">meter</tspan></text>
+
+  <!-- tagline -->
+  <text x="64" y="146" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="17" fill="#8B949E">Your context window is a commons with no rent.</text>
+  <text x="64" y="172" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="17" fill="#8B949E">Find out which instructions actually earn their place.</text>
+
+  <!-- context bar label -->
+  <text x="64" y="204" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11" letter-spacing="1.6" fill="#5A636E">ALWAYS-ON CONTEXT, CACHE-WEIGHTED</text>
+
+  <!-- stacked bar -->
+  <g clip-path="url(#barclip)">
+    <rect x="64"  y="214" width="1072" height="26" fill="#161B23"/>
+    <rect x="64"  y="214" width="676"  height="26" fill="url(#hatch)"/>
+    <rect x="740" y="214" width="182"  height="26" fill="#B8873B"/>
+    <rect x="922" y="214" width="214"  height="26" fill="#4E9A6B"/>
+  </g>
+  <rect x="64" y="214" width="1072" height="26" rx="4" fill="none" stroke="#242C38"/>
+
+  <!-- legend -->
+  <g font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="13">
+    <rect x="64" y="268" width="11" height="11" fill="url(#hatch)"/>
+    <text x="83" y="278" fill="#C9713F">63%  ballast</text>
+    <text x="83" y="298" fill="#5A636E" font-size="11">no observable consequence</text>
+
+    <rect x="330" y="268" width="11" height="11" fill="#B8873B"/>
+    <text x="349" y="278" fill="#B8873B">17%  unproven</text>
+    <text x="349" y="298" fill="#5A636E" font-size="11">below evidence threshold</text>
+
+    <rect x="596" y="268" width="11" height="11" fill="#4E9A6B"/>
+    <text x="615" y="278" fill="#4E9A6B">20%  load-bearing</text>
+    <text x="615" y="298" fill="#5A636E" font-size="11">measured consequence</text>
+  </g>
+
+  <text x="1136" y="298" text-anchor="end" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11" fill="#454D57">illustrative — not a measurement</text>
+</svg>
