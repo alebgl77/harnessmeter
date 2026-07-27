@@ -7,10 +7,11 @@
  */
 
 import fs from 'node:fs';
-import type { Analysis, Claim, Proposal, Session } from './types.ts';
+import type { Analysis, Claim, ClaimEvidence, Proposal, Session } from './types.ts';
 import { alwaysOnCost, turnCostUsd } from './pricing.ts';
 import { runEvidence } from './evidence.ts';
 import { scanHarness } from './harness.ts';
+import type { T2Result } from './evidence-t2.ts';
 
 function median(xs: number[]): number {
   if (xs.length === 0) return 0;
@@ -19,7 +20,17 @@ function median(xs: number[]): number {
   return s.length % 2 ? s[m] : Math.round((s[m - 1] + s[m]) / 2);
 }
 
-export function analyze(cwd: string, sessions: Session[]): Analysis {
+export type Prepared = {
+  claims: Claim[];
+  bodies: Map<string, string>;
+  evidence: Map<string, ClaimEvidence>;
+};
+
+/**
+ * Everything free: claim extraction plus T0/T1 evidence.
+ * Split out so T2 can escalate the uncertain claims before the aggregates are computed.
+ */
+export function prepare(cwd: string): Prepared {
   const { claims } = scanHarness(cwd);
 
   const bodies = new Map<string, string>();
@@ -34,7 +45,19 @@ export function analyze(cwd: string, sessions: Session[]): Analysis {
     }
   }
 
-  const evidence = runEvidence({ claims, sessions, bodies });
+  return { claims, bodies, evidence: new Map() };
+}
+
+export function analyze(
+  cwd: string,
+  sessions: Session[],
+  pre?: Prepared,
+  t2?: T2Result,
+): Analysis {
+  const prepared = pre ?? prepare(cwd);
+  const { claims, bodies } = prepared;
+  const evidence =
+    prepared.evidence.size > 0 ? prepared.evidence : runEvidence({ claims, sessions, bodies });
 
   // ---- exact aggregates, straight from the transcripts -----------------------------
   const billed = { input: 0, cacheRead: 0, cacheWrite5m: 0, cacheWrite1h: 0, output: 0 };
@@ -102,10 +125,13 @@ export function analyze(cwd: string, sessions: Session[]): Analysis {
     if (ev.verdict !== 'ballast') continue;
 
     const saving = alwaysOnCost(c.alwaysOnTokens, medianTurnsPerSession);
+    // A rule the agent ignored is not the same problem as a rule nothing needed.
+    // The first wants rewriting, the second wants demoting — don't conflate them.
+    const ignored = ev.note.includes('present but not followed');
     proposals.push({
       claimId: c.id,
       label: c.label,
-      action: c.kind === 'prose-section' ? 'demote' : 'evict',
+      action: ignored ? 'investigate' : c.kind === 'prose-section' ? 'demote' : 'evict',
       savingPerSession: Math.round(saving),
       receipt: {
         tier: ev.tier, sessions: ev.observedIn, firedIn: ev.firedIn,
@@ -133,6 +159,13 @@ export function analyze(cwd: string, sessions: Session[]): Analysis {
     evidence,
     proposals,
     deadSharePct,
-    analysisCostTokens: 0,
+    cost: {
+      tokens: t2?.tokens ?? 0,
+      usd: t2?.costUsd ?? 0,
+      calls: t2?.calls ?? 0,
+      tier: t2 ? 'T0/T1/T2' : 'T0/T1',
+      model: t2?.model,
+      judged: t2?.verdicts.size,
+    },
   };
 }

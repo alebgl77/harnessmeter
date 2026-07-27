@@ -38,6 +38,7 @@ has to be earned.
 ```sh
 npx harnessmeter          # this project
 npx harnessmeter --all    # every project on this machine
+npx harnessmeter --t2     # escalate the unproven claims (see below)
 ```
 
 Requires Node ≥ 22.18 — the source is TypeScript and Node runs it directly, so there is no
@@ -85,16 +86,41 @@ the decision is actually uncertain.
 
 ```mermaid
 flowchart LR
-    T0["<b>T0 · Presence</b><br/>is it even loaded?<br/><i>free</i>"]
-    T1["<b>T1 · Consequence</b><br/>mechanical footprint<br/>in the trajectory<br/><i>free</i>"]
-    T2["<b>T2 · Judgement</b><br/>trajectory review by<br/>your local agent<br/><i>your own quota</i>"]
-    T3["<b>T3 · Natural experiment</b><br/>staggered adoption in<br/>harness git history<br/><i>free</i>"]
-    T4["<b>T4 · Field randomisation</b><br/>vary the harness on runs<br/>that were happening anyway<br/><i>zero incremental</i>"]
+    T0["<b>T0 · Presence</b><br/>is it even loaded?<br/><i>free · shipped</i>"]
+    T1["<b>T1 · Consequence</b><br/>mechanical footprint<br/>in the trajectory<br/><i>free · shipped</i>"]
+    T2["<b>T2 · Judgement</b><br/>trajectory review by<br/>your local agent<br/><i>your own quota · shipped</i>"]
+    T3["<b>T3 · Natural experiment</b><br/>staggered adoption in<br/>harness git history<br/><i>free · planned</i>"]
+    T4["<b>T4 · Field randomisation</b><br/>vary the harness on runs<br/>that were happening anyway<br/><i>zero incremental · planned</i>"]
 
     T0 -->|"uncertain"| T1 -->|"uncertain"| T2 -->|"uncertain"| T3 -->|"uncertain"| T4
 ```
 
-Two design notes worth stating plainly:
+### T2, and what it costs
+
+T0 and T1 are free but blunt: they can only rule on claims with a mechanically observable
+footprint. Everything else comes back `unproven` — honest, but not useful. `--t2` escalates
+exactly those, and only those.
+
+It shells out to the agent CLI you already have (`claude`, `codex`) and spends **your own
+quota** — harnessmeter never holds an API key. It sends the claim text plus a **shape-only
+digest** of sampled sessions: turn counts and tool-call tallies. No message content, no file
+contents, no paths. You are asked to confirm before anything is sent.
+
+That bound is deliberate, and it bounds what T2 may claim: a rule about tone or wording
+cannot be judged from a tool trajectory, so it returns **`unjudgeable`** rather than a
+guess. A wrong "complied" is worse than an honest "I can't tell".
+
+Calls are batched hard — one call judging twelve claims, never twelve calls. On a loaded
+setup a single headless invocation costs about **$0.11 before it does anything**, because it
+pays the full always-on prefix. That measurement is itself an argument for the tool.
+
+T2 distinguishes two failures that look alike and are not: a rule **nothing needed** wants
+demoting; a rule **the agent ignored** wants rewriting. The report never conflates them.
+
+The balance line reports what the run cost and how long it takes to pay for itself, so the
+"net-negative by construction" claim can be audited rather than believed.
+
+Two more design notes worth stating plainly:
 
 **History is the control arm.** Classical ablation pays for both arms. But the "with the
 rule" arm already exists — it's in your session transcripts. We only pay for the
@@ -145,13 +171,13 @@ transcripts. What ships today is:
 - exact billed-token accounting, including the 5m/1h cache-write split
 - measured always-on prefix, decomposed into harness files vs. residual
 - claim extraction from `CLAUDE.md`, skills, subagents, MCP servers
-- evidence tiers **T0** (presence) and **T1** (consequence)
+- evidence tiers **T0** (presence), **T1** (consequence) and **T2** (judgement via your own agent)
 - lease ledger, dead share, demotion proposals with receipts, terminal + HTML report
+- a balance line that reports what the run cost and when it pays for itself
 
-Not yet: **T2** judgement, **T3** natural experiments over harness git history, **T4** field
-randomisation, and the patch generator. Per-claim token counts are calibrated estimates at
-~3.8 chars/token and are labelled as estimates everywhere they appear; session-level
-figures are exact.
+Not yet: **T3** natural experiments over harness git history, **T4** field randomisation, and
+the patch generator. Per-claim token counts are calibrated estimates at ~3.8 chars/token
+and are labelled as estimates everywhere they appear; session-level figures are exact.
 
 The measurement protocol for the higher tiers will be **pre-registered and published before
 any results are**.

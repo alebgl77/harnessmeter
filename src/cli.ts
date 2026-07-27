@@ -8,7 +8,10 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { analyze } from './analyze.ts';
+import { analyze, prepare } from './analyze.ts';
+import { runEvidence } from './evidence.ts';
+import { mergeT2, runT2, t2Candidates, type T2Result } from './evidence-t2.ts';
+import { detectAgent } from './agent.ts';
 import { renderTerminal } from './report-term.ts';
 import { renderHtml } from './report-html.ts';
 import { findProjectDir, listProjectDirs, scanSessions } from './transcript.ts';
@@ -23,28 +26,65 @@ harnessmeter 0.1.0 — price the leases your context window is carrying
   --json             print machine-readable analysis to stdout
   --no-html          skip writing the HTML report
   --out <path>       HTML output path (default .harnessmeter/report.html)
+
+  --t2               escalate unproven claims to your local agent for judgement
+  --t2-model <m>     model for T2 (default: sonnet)
+  --yes              skip the T2 confirmation prompt
+
   --help
 
-  Reads ~/.claude/projects/**/*.jsonl and your harness files.
-  Zero model calls. Zero network. Nothing leaves this machine.
+  T0/T1 are free: local files only, zero model calls, zero network.
+  T2 spends your own quota through your own agent CLI, and says what it cost.
 `;
 
 type Args = {
-  all: boolean; limit: number; json: boolean; html: boolean; out?: string; help: boolean;
+  all: boolean; limit: number; json: boolean; html: boolean; out?: string;
+  t2: boolean; t2Model?: string; yes: boolean; help: boolean;
 };
 
 function parseArgs(argv: string[]): Args {
-  const a: Args = { all: false, limit: 400, json: false, html: true, help: false };
+  const a: Args = { all: false, limit: 400, json: false, html: true, t2: false, yes: false, help: false };
   for (let i = 0; i < argv.length; i++) {
     const v = argv[i];
     if (v === '--all') a.all = true;
     else if (v === '--json') a.json = true;
     else if (v === '--no-html') a.html = false;
+    else if (v === '--t2') a.t2 = true;
+    else if (v === '--yes' || v === '-y') a.yes = true;
     else if (v === '--help' || v === '-h') a.help = true;
     else if (v === '--limit') a.limit = Math.max(1, Number(argv[++i]) || 400);
+    else if (v === '--t2-model') a.t2Model = argv[++i];
     else if (v === '--out') a.out = argv[++i];
   }
   return a;
+}
+
+/**
+ * T2 sends data to the user's model provider. That is a different privacy posture from
+ * T0/T1, so it is stated plainly and confirmed before anything is sent.
+ */
+async function confirmT2(candidates: number, model: string, auto: boolean): Promise<boolean> {
+  process.stderr.write(
+    `\n  T2 will ask your local agent to judge ${candidates} unproven claim${candidates === 1 ? '' : 's'} (model: ${model}).\n` +
+      `  It sends: the claim text, and turn counts plus tool-call tallies from sampled sessions.\n` +
+      `  It does not send: message content, file contents, or file paths.\n` +
+      `  This uses your own quota. Cost is reported when it finishes.\n`,
+  );
+  if (auto) {
+    process.stderr.write('  --yes given, proceeding.\n\n');
+    return true;
+  }
+  if (!process.stdin.isTTY) {
+    process.stderr.write('  Not a TTY — rerun with --yes to proceed.\n\n');
+    return false;
+  }
+  process.stderr.write('\n  Proceed? [y/N] ');
+  const answer = await new Promise<string>((resolve) => {
+    process.stdin.setEncoding('utf8');
+    process.stdin.once('data', (d) => resolve(String(d).trim().toLowerCase()));
+  });
+  process.stderr.write('\n');
+  return answer === 'y' || answer === 'yes';
 }
 
 async function main() {
@@ -76,7 +116,41 @@ async function main() {
     return;
   }
 
-  const analysis = analyze(cwd, sessions);
+  const prepared = prepare(cwd);
+  prepared.evidence = runEvidence({
+    claims: prepared.claims,
+    sessions,
+    bodies: prepared.bodies,
+  });
+
+  let t2: T2Result | undefined;
+  if (args.t2) {
+    const candidates = t2Candidates(prepared.claims, prepared.evidence);
+    if (candidates.length === 0) {
+      process.stderr.write('\n  T2: nothing to escalate — no unproven claims at T0/T1.\n');
+    } else {
+      const agent = await detectAgent();
+      if (agent.kind === 'none') {
+        process.stderr.write(
+          '\n  T2 needs a local agent CLI on PATH (looked for `claude`, `codex`). Skipping.\n',
+        );
+      } else {
+        const model = args.t2Model ?? 'sonnet';
+        if (await confirmT2(candidates.length, model, args.yes)) {
+          process.stderr.write('  judging');
+          t2 = await runT2(candidates, prepared.bodies, sessions, {
+            agent,
+            model,
+            onProgress: () => process.stderr.write('.'),
+          });
+          process.stderr.write(' done\n');
+          mergeT2(prepared.evidence, t2, prepared.claims);
+        }
+      }
+    }
+  }
+
+  const analysis = analyze(cwd, sessions, prepared, t2);
 
   if (args.json) {
     process.stdout.write(

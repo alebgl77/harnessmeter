@@ -4,10 +4,11 @@
   "description": "A profiler for your agentic harness. Price every line of CLAUDE.md, every skill, subagent and MCP server — then find the ones that don't earn their place.",
   "type": "module",
   "bin": {
-    "harnessmeter": "src/cli.ts"
+    "harnessmeter": "bin/harnessmeter.js"
   },
   "main": "src/cli.ts",
   "files": [
+    "bin",
     "src",
     "README.md",
     "LICENSE"

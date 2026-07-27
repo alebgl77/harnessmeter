@@ -200,14 +200,16 @@ ${proposals(a)}
 
 <h2>BALANCE</h2>
 <div class="bal">
-  <div><span>analysis cost</span><strong style="color:var(--green)">0 tokens</strong></div>
-  <div><span>network calls</span><strong style="color:var(--green)">0</strong></div>
+  <div><span>tiers reached</span><strong>${a.cost.tier}</strong></div>
+  <div><span>analysis cost</span><strong style="color:${a.cost.tokens > 0 ? 'var(--amber)' : 'var(--green)'}">${a.cost.tokens > 0 ? `${n(a.cost.tokens)} tokens · $${a.cost.usd.toFixed(3)}` : '0 tokens'}</strong></div>
+  ${a.cost.tokens > 0 ? `<div><span>claims judged at T2</span><strong>${a.cost.judged ?? 0} <small style="color:var(--dim)">via ${esc(a.cost.model ?? '')}, your own quota</small></strong></div>` : '<div><span>network calls</span><strong style="color:var(--green)">0</strong></div>'}
   <div><span>proposals would save</span><strong style="color:var(--green)">${saved > 0 ? '~' + n(saved) + ' eff tok / session' : '—'}</strong></div>
+  ${a.cost.tokens > 0 && saved > 0 ? `<div><span>payback</span><strong style="color:var(--green)">${a.cost.tokens / saved < 1 ? 'first session' : '~' + Math.ceil(a.cost.tokens / saved) + ' sessions'}</strong></div>` : ''}
 </div>
 
 <footer>
-harnessmeter 0.1.0 · evidence tiers reached in this run: T0 (presence), T1 (consequence).
-T2 judgement, T3 natural experiments and T4 field randomisation are not in this release.<br>
+harnessmeter 0.1.0 · evidence tiers reached in this run: ${a.cost.tier === 'T0/T1/T2' ? 'T0 (presence), T1 (consequence), T2 (judgement)' : 'T0 (presence), T1 (consequence) — run with <code>--t2</code> to escalate unproven claims'}.
+T3 natural experiments and T4 field randomisation are not in this release.<br>
 Session-level figures are exact. Per-claim token counts are calibrated estimates at
 ~3.8 chars/token and are labelled as such wherever shown.
 </footer>

@@ -115,12 +115,25 @@ export function renderTerminal(a: Analysis): string {
 
   // ---- balance -----------------------------------------------------------------
   const saved = a.proposals.reduce((s, x) => s + x.savingPerSession, 0);
-  p(`  ${amber('BALANCE')}`);
+  p(`  ${amber('BALANCE')}  ${dim(`tiers reached: ${a.cost.tier}`)}`);
   p();
-  p(`    analysis cost         ${green('0 tokens')} ${dim('(no model call, no network)')}`);
+  if (a.cost.tokens > 0) {
+    p(
+      `    analysis cost         ${amber(n(a.cost.tokens) + ' tokens')} ${dim(`· $${a.cost.usd.toFixed(3)} · ${a.cost.calls} call${a.cost.calls === 1 ? '' : 's'} · ${a.cost.model}`)}`,
+    );
+    p(`    ${dim(`judged ${a.cost.judged ?? 0} claims your own quota paid for`)}`);
+  } else {
+    p(`    analysis cost         ${green('0 tokens')} ${dim('(no model call, no network)')}`);
+  }
   p(
     `    proposals would save  ${saved > 0 ? green(`~${n(saved)} eff tok/session`) : dim('—')}`,
   );
+  if (a.cost.tokens > 0 && saved > 0) {
+    const payback = a.cost.tokens / saved;
+    p(
+      `    ${dim(`pays for itself after ${payback < 1 ? 'the first session' : `~${Math.ceil(payback)} sessions`}`)}`,
+    );
+  }
   p();
 
   return L.join('\n');

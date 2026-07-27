@@ -140,5 +140,16 @@ export type Analysis = {
   evidence: Map<string, ClaimEvidence>;
   proposals: Proposal[];
   deadSharePct: number;
-  analysisCostTokens: 0;
+  /**
+   * What this analysis cost. T0/T1 are free; T2 spends the user's own quota via their own
+   * agent CLI. Reported so the net-negative claim can be audited rather than asserted.
+   */
+  cost: {
+    tokens: number;
+    usd: number;
+    calls: number;
+    tier: 'T0/T1' | 'T0/T1/T2';
+    model?: string;
+    judged?: number;
+  };
 };

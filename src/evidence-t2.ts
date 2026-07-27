@@ -1,0 +1,204 @@
+/**
+ * T2 — judgement.
+ *
+ * T0 and T1 are free but blunt: they can only rule on claims with a mechanically
+ * observable footprint. Everything else comes back `unproven`, which is honest but not
+ * useful. T2 escalates exactly those claims, and only those — measurement effort is spent
+ * where the decision is actually uncertain.
+ *
+ * What it sends: the claim text, plus a SHAPE-ONLY digest of sampled sessions — turn
+ * counts and tool-call tallies. No message content, no file contents, no paths. That keeps
+ * the call cheap and the disclosure small, and it bounds what T2 can honestly rule on:
+ * a rule that can only be judged from prose gets `unjudgeable`, never a guess.
+ *
+ * What it costs: the user's own quota, via their own agent CLI. Reported exactly.
+ */
+
+import type { Claim, ClaimEvidence, Session } from './types.ts';
+import { ask, extractJson, type AgentInfo } from './agent.ts';
+
+const CLAIMS_PER_CALL = 12;
+const SESSIONS_SAMPLED = 18;
+const CLAIM_CHARS = 700;
+
+export type T2Outcome = 'complied' | 'violated' | 'not-applicable' | 'unjudgeable';
+
+export type T2Verdict = {
+  id: string;
+  outcome: T2Outcome;
+  confidence: 'high' | 'medium' | 'low';
+  why: string;
+};
+
+export type T2Result = {
+  verdicts: Map<string, T2Verdict>;
+  costUsd: number;
+  tokens: number;
+  calls: number;
+  model: string;
+};
+
+/** Shape only. Deliberately contains nothing a reader could reconstruct work from. */
+function digest(sessions: Session[]): string {
+  return sessions
+    .slice(0, SESSIONS_SAMPLED)
+    .map((s, i) => {
+      const tally = new Map<string, number>();
+      for (const t of s.turns) for (const name of t.tools) tally.set(name, (tally.get(name) ?? 0) + 1);
+      const tools = [...tally]
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 10)
+        .map(([n, c]) => `${n}x${c}`)
+        .join(' ');
+      const skills = [...s.skillsUsed].slice(0, 5).join(',') || '-';
+      return `s${i + 1}: ${s.turns.length} turns | ${tools || 'no tools'} | skills: ${skills}`;
+    })
+    .join('\n');
+}
+
+function buildPrompt(batch: Claim[], bodies: Map<string, string>, sessionDigest: string): string {
+  const rules = batch
+    .map((c) => {
+      const body = (bodies.get(c.id) ?? c.label).replace(/\s+/g, ' ').trim().slice(0, CLAIM_CHARS);
+      return `<rule id="${c.id}">\n${body}\n</rule>`;
+    })
+    .join('\n\n');
+
+  return `You are auditing whether instructions loaded into a coding agent's context actually changed its behaviour.
+
+Below are RULES that were present in the agent's context, and SESSION DIGESTS from real sessions where they were loaded. The digests are shape-only: turn counts and tool-call tallies. You cannot see any message text.
+
+For each rule, return exactly one outcome:
+
+- "complied"       the digests show behaviour consistent with the rule
+- "violated"       the digests show behaviour the rule prohibits, or the rule prescribes an action that plainly never happened
+- "not-applicable" the rule's subject never came up in these sessions
+- "unjudgeable"    the rule concerns tone, wording, reasoning or anything else that cannot be seen in a tool-call trajectory
+
+Choosing "unjudgeable" is correct and expected for style and prose rules. Do not guess; a wrong "complied" is worse than an honest "unjudgeable".
+
+SESSION DIGESTS
+${sessionDigest}
+
+RULES
+${rules}
+
+Reply with JSON only, no prose:
+{"verdicts":[{"id":"<rule id>","outcome":"complied|violated|not-applicable|unjudgeable","confidence":"high|medium|low","why":"<max 12 words>"}]}`;
+}
+
+export type RunT2Options = {
+  agent: AgentInfo;
+  model?: string;
+  onProgress?: (done: number, total: number) => void;
+};
+
+/** Claims worth escalating: unproven or unrulable at T0/T1, not protected, actually costly. */
+export function t2Candidates(claims: Claim[], evidence: Map<string, ClaimEvidence>): Claim[] {
+  return claims.filter((c) => {
+    if (c.protected) return false;
+    if (c.alwaysOnTokens <= 0) return false;
+    const ev = evidence.get(c.id);
+    if (!ev) return false;
+    return ev.verdict === 'unproven' || ev.tier === 'none';
+  });
+}
+
+export async function runT2(
+  candidates: Claim[],
+  bodies: Map<string, string>,
+  sessions: Session[],
+  opts: RunT2Options,
+): Promise<T2Result> {
+  const model = opts.model ?? 'sonnet';
+  const out: T2Result = { verdicts: new Map(), costUsd: 0, tokens: 0, calls: 0, model };
+  if (candidates.length === 0) return out;
+
+  const sessionDigest = digest(sessions);
+  const batches: Claim[][] = [];
+  for (let i = 0; i < candidates.length; i += CLAIMS_PER_CALL) {
+    batches.push(candidates.slice(i, i + CLAIMS_PER_CALL));
+  }
+
+  let done = 0;
+  for (const batch of batches) {
+    const prompt = buildPrompt(batch, bodies, sessionDigest);
+    let res;
+    try {
+      res = await ask(opts.agent, prompt, { model });
+    } catch {
+      done += batch.length;
+      opts.onProgress?.(done, candidates.length);
+      continue; // a failed batch leaves those claims at their T0/T1 verdict
+    }
+
+    out.calls++;
+    out.costUsd += res.costUsd ?? 0;
+    if (res.usage) {
+      out.tokens +=
+        res.usage.inputTokens +
+        res.usage.cacheReadTokens +
+        res.usage.cacheWriteTokens +
+        res.usage.outputTokens;
+    }
+
+    const parsed = extractJson(res.text) as { verdicts?: T2Verdict[] } | undefined;
+    for (const v of parsed?.verdicts ?? []) {
+      if (!v?.id) continue;
+      const outcome: T2Outcome = ['complied', 'violated', 'not-applicable', 'unjudgeable'].includes(
+        v.outcome,
+      )
+        ? v.outcome
+        : 'unjudgeable';
+      out.verdicts.set(v.id, {
+        id: v.id,
+        outcome,
+        confidence: v.confidence === 'high' || v.confidence === 'low' ? v.confidence : 'medium',
+        why: String(v.why ?? '').slice(0, 90),
+      });
+    }
+
+    done += batch.length;
+    opts.onProgress?.(done, candidates.length);
+  }
+
+  return out;
+}
+
+/** Fold T2 outcomes back into the evidence map. Never overrides a protected claim. */
+export function mergeT2(
+  evidence: Map<string, ClaimEvidence>,
+  t2: T2Result,
+  claims: Claim[],
+): void {
+  const byId = new Map(claims.map((c) => [c.id, c]));
+  for (const [id, v] of t2.verdicts) {
+    const ev = evidence.get(id);
+    const claim = byId.get(id);
+    if (!ev || !claim || claim.protected) continue;
+
+    if (v.outcome === 'unjudgeable') {
+      evidence.set(id, {
+        ...ev,
+        tier: 'T2',
+        verdict: 'unproven',
+        note: `T2: not judgeable from a tool trajectory — ${v.why || 'needs content-level review'}`,
+      });
+      continue;
+    }
+
+    const verdict =
+      v.outcome === 'complied' ? 'load-bearing' : 'ballast';
+    evidence.set(id, {
+      ...ev,
+      tier: 'T2',
+      verdict,
+      note:
+        v.outcome === 'violated'
+          ? `T2: present but not followed — ${v.why || 'rewrite or remove'}`
+          : v.outcome === 'not-applicable'
+            ? `T2: subject never arose in ${t2.verdicts.size ? 'sampled sessions' : 'sessions'} — ${v.why}`
+            : `T2: behaviour consistent with the rule — ${v.why}`,
+    });
+  }
+}
