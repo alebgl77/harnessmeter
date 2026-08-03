@@ -60,7 +60,10 @@ jobs:
     name: publish to npm
     needs: verify
     runs-on: ubuntu-latest
-    environment: npm
+    # No `environment:` on purpose. Declaring one changes the OIDC subject claim from
+    # `repo:OWNER/REPO:ref:refs/tags/vX` to `repo:OWNER/REPO:environment:NAME`, which then
+    # fails to match a trusted publisher registered without an environment. If you add an
+    # environment here, set the matching field on npmjs.com in the same change.
     permissions:
       contents: read
       id-token: write # required for OIDC trusted publishing
