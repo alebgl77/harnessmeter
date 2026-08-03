@@ -16,6 +16,39 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **Patch generator.** Emit the demotion as a reviewable diff rather than a description.
 - **Readers for other harnesses.** Codex and Antigravity transcript formats.
 
+## [0.1.4] — 2026-07-28
+
+Release-pipeline hardening. No change to what the tool measures or reports.
+
+### Security
+
+- **No GitHub expression is interpolated into a shell block.** `${{ }}` is substituted
+  textually before the shell parses the line, so a dispatch input — or a tag name, which may
+  legally contain shell metacharacters — became executable text. Every such value now
+  crosses into the shell through `env:` and is read as a quoted variable.
+- **A dispatch version is validated on the whole string, not line by line.** `grep` matches
+  per line, so `0.1.3` followed by a newline and arbitrary text passes a semver grep on its
+  first line and writes a second line into `GITHUB_OUTPUT`. A character-class guard runs
+  first and sees the value whole.
+- **The published tarball is checked against a digest recorded at verification time**, so
+  "the artifact that was tested is the artifact that shipped" is verified rather than
+  assumed.
+- **The checked-out commit must be the tag**, not merely a commit on which the tag exists.
+
+### Added
+
+- `test/release-workflow.test.ts` — reads the shipped YAML and asserts its invariants:
+  no expression inside any `run:` body, the version guard's accept and reject sets
+  (including the multi-line case), tag-only publishing, digest-before-publish ordering,
+  every action pinned to a full commit SHA, and no environment on the publish job. It
+  exercises the guard the workflow actually contains rather than a copy of it. 82 tests.
+- CI fails if `package-lock.json` is out of sync with `package.json`.
+
+### Fixed
+
+- A comment in `src/cli.ts` still described the agent CLI as always spawning through a
+  shell on Windows, which stopped being true in 0.1.3.
+
 ## [0.1.3] — 2026-07-28
 
 Completes the `--all` scoping work and stops the report describing a remainder it has not
@@ -146,7 +179,8 @@ Initial implementation.
 - **The primary action is demotion, not deletion.** Moving an always-on block to on-demand
   is a large win at near-zero risk. Deletion is the rare case.
 
-[Unreleased]: https://github.com/alebgl77/harnessmeter/compare/v0.1.3...HEAD
+[Unreleased]: https://github.com/alebgl77/harnessmeter/compare/v0.1.4...HEAD
+[0.1.4]: https://github.com/alebgl77/harnessmeter/compare/v0.1.3...v0.1.4
 [0.1.3]: https://github.com/alebgl77/harnessmeter/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/alebgl77/harnessmeter/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/alebgl77/harnessmeter/compare/v0.1.0...v0.1.1

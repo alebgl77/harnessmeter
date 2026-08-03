@@ -44,9 +44,9 @@ type Args = {
 };
 
 /**
- * The agent CLI is spawned with `shell: true` on Windows, which is how a `.cmd` shim gets
- * resolved. That makes any value reaching argv a potential injection point, so the model
- * name is constrained to what a model id can actually contain.
+ * A bare agent command still goes through a shell on Windows, which is how a `.cmd` shim
+ * gets resolved, so a value reaching argv can still reach a shell. The model name is
+ * therefore constrained to what a model id can actually contain.
  */
 function safeModel(v: string | undefined): string | undefined {
   if (!v) return undefined;

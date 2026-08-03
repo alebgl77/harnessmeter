@@ -15,6 +15,12 @@ name: release
 #   environment (left empty, matching the publish job below)
 #
 # Actions are pinned by commit SHA rather than by tag: a tag can be moved, a SHA cannot.
+#
+# No `${{ }}` expression appears inside a `run:` block. GitHub substitutes those textually
+# before the shell parses the line, so a dispatch input — or a tag name, which may contain
+# shell metacharacters — would become executable text. Every such value is passed through
+# `env:` and read as a quoted shell variable instead. `test/release-workflow.test.ts`
+# asserts this property against this file.
 
 on:
   push:
@@ -22,7 +28,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Existing tag to publish, without the leading v (e.g. 0.1.3)'
+        description: 'Existing tag to publish, without the leading v (e.g. 0.1.4)'
         required: true
         type: string
 
@@ -41,42 +47,81 @@ jobs:
     steps:
       - name: resolve the ref to publish
         id: resolve
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_VERSION: ${{ inputs.version }}
+          PUSH_REF: ${{ github.ref }}
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            ref="refs/tags/v${{ inputs.version }}"
+          set -euo pipefail
+
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            version="$INPUT_VERSION"
+
+            # Character guard first, and it must come first: `grep` matches line by line, so
+            # a value like "0.1.3<newline>anything" passes a semver grep on its first line
+            # and then writes a second line into GITHUB_OUTPUT. `case` sees the whole
+            # string, newline included.
+            case "$version" in
+              '' | *[!0-9A-Za-z.+-]*)
+                echo "version contains characters outside [0-9A-Za-z.+-] or is empty"
+                exit 1
+                ;;
+            esac
+
+            if ! printf '%s' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$'; then
+              echo "invalid semantic version: $version"
+              exit 1
+            fi
+            ref="refs/tags/v$version"
           else
-            ref="${GITHUB_REF}"
+            ref="$PUSH_REF"
           fi
+
           case "$ref" in
             refs/tags/v*) ;;
             *) echo "refusing to publish from '$ref' — only refs/tags/v* may be published"; exit 1 ;;
           esac
-          echo "ref=$ref" >> "$GITHUB_OUTPUT"
-          echo "publishing $ref"
+
+          printf 'ref=%s\n' "$ref" >> "$GITHUB_OUTPUT"
+          printf 'publishing %s\n' "$ref"
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ steps.resolve.outputs.ref }}
           fetch-depth: 0
 
-      - name: the tag must exist and be the checked-out commit
+      - name: the checked-out commit must be the tag
+        env:
+          RELEASE_REF: ${{ steps.resolve.outputs.ref }}
         run: |
-          tag="${{ steps.resolve.outputs.ref }}"
-          tag="${tag#refs/tags/}"
-          if ! git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
+          set -euo pipefail
+          tag="${RELEASE_REF#refs/tags/}"
+
+          if ! git rev-parse -q --verify "refs/tags/$tag^{commit}" >/dev/null; then
             echo "tag $tag does not exist"; exit 1
           fi
-          echo "tag $tag -> $(git rev-parse --short HEAD)"
+
+          tag_sha=$(git rev-parse "refs/tags/$tag^{commit}")
+          head_sha=$(git rev-parse HEAD)
+          if [ "$tag_sha" != "$head_sha" ]; then
+            echo "checked-out commit $head_sha is not tag $tag ($tag_sha)"; exit 1
+          fi
+          printf 'tag %s -> %s\n' "$tag" "$head_sha"
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: '24'
 
       - name: pin npm
-        run: npm install -g npm@${{ env.NPM_VERSION }}
+        env:
+          PIN: ${{ env.NPM_VERSION }}
+        run: npm install -g "npm@$PIN"
 
       - name: install from the lockfile
         run: npm ci
+
+      - name: the lockfile must be in sync
+        run: git diff --exit-code -- package-lock.json
 
       - name: tests
         run: npm test
@@ -85,22 +130,26 @@ jobs:
         run: npm run typecheck
 
       - name: tag must match package.json
+        env:
+          RELEASE_REF: ${{ steps.resolve.outputs.ref }}
         run: |
-          tag="${{ steps.resolve.outputs.ref }}"
-          tag="${tag#refs/tags/v}"
+          set -euo pipefail
+          tag="${RELEASE_REF#refs/tags/v}"
           pkg=$(node -p "require('./package.json').version")
           if [ "$tag" != "$pkg" ]; then
             echo "tag v$tag does not match package.json $pkg"; exit 1
           fi
-          echo "version $pkg"
+          printf 'version %s\n' "$pkg"
 
       - name: build the tarball
         run: |
+          set -euo pipefail
           npm pack
           mv harnessmeter-*.tgz harnessmeter.tgz
 
       - name: the tarball must ship no TypeScript
         run: |
+          set -euo pipefail
           if tar -tzf harnessmeter.tgz | grep -q '\.ts$'; then
             echo "tarball contains .ts files — they cannot run under node_modules"
             tar -tzf harnessmeter.tgz | grep '\.ts$'
@@ -110,17 +159,23 @@ jobs:
 
       - name: the tarball must install and run
         run: |
+          set -euo pipefail
           mkdir -p /tmp/consumer && cd /tmp/consumer
           npm init -y >/dev/null
           npm install "$GITHUB_WORKSPACE/harnessmeter.tgz"
           ./node_modules/.bin/harnessmeter --help
 
-      # The published artifact is this exact file. Rebuilding it in the publish job would
-      # mean publishing something no job ever verified.
+      # The digest makes "the published artifact is the verified artifact" checkable rather
+      # than merely intended.
+      - name: hash the verified tarball
+        run: sha256sum harnessmeter.tgz | tee harnessmeter.tgz.sha256
+
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: tarball
-          path: harnessmeter.tgz
+          path: |
+            harnessmeter.tgz
+            harnessmeter.tgz.sha256
           retention-days: 7
           if-no-files-found: error
 
@@ -143,16 +198,24 @@ jobs:
           node-version: '24'
 
       - name: pin npm
-        run: npm install -g npm@${{ env.NPM_VERSION }}
+        env:
+          PIN: ${{ env.NPM_VERSION }}
+        run: npm install -g "npm@$PIN"
 
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: tarball
 
+      - name: the tarball must be the one that was verified
+        run: |
+          set -euo pipefail
+          sha256sum --check harnessmeter.tgz.sha256
+
       - name: no credentials must be present — OIDC has to be the only path
         run: |
+          set -euo pipefail
           rm -f .npmrc ~/.npmrc
-          echo "npm $(npm --version)"
+          printf 'npm %s\n' "$(npm --version)"
 
       # Publishing the tarball built and verified above, not a fresh build.
       - name: publish
