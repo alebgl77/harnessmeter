@@ -1,9 +1,9 @@
 /**
- * Single source of truth for the version shown to users.
+ * Single source of truth for the version shown to users — the help text, the terminal
+ * header and the HTML footer all read it from here rather than carrying their own copy.
  *
- * Hard-coding it in the help text, the terminal header and the HTML footer meant three
- * places to forget, and 0.1.1 shipped announcing itself as 0.1.0. package.json sits at the
- * same relative path from both `src/` and `dist/`, so one lookup covers both entry points.
+ * package.json sits at the same relative path from both `src/` and `dist/`, so one lookup
+ * serves the source checkout and the compiled entry point alike.
  */
 
 import fs from 'node:fs';

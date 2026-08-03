@@ -79,8 +79,8 @@ jobs:
 
   package:
     # A package that works from a checkout and fails from node_modules is the failure mode
-    # that matters: Node refuses to strip types under node_modules, so the published
-    # artifact must be compiled. This job proves it before anyone runs `npx harnessmeter`.
+    # that matters: Node does not strip types under node_modules, so the published artifact
+    # must be compiled. This job proves it before anyone runs `npx harnessmeter`.
     name: packaged install · node ${{ matrix.node }}
     runs-on: ubuntu-latest
     strategy:

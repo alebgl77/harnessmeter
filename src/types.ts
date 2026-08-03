@@ -18,8 +18,8 @@ export type Turn = {
   tools: string[];
   /**
    * Shell commands run this turn, truncated. A rule that prescribes `npm test` leaves no
-   * trace in tool *names* — every one of them is just "Bash" — so without these, any
-   * command-prescribing rule is unfalsifiable and lands as false ballast.
+   * trace in tool *names* — every shell call is just "Bash" — so the command line itself
+   * is the only place such a rule can be confirmed or refuted.
    */
   commands: string[];
   timestamp?: string;

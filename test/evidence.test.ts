@@ -1,9 +1,9 @@
 /**
- * Regression tests for the ways this tool can manufacture a false verdict.
+ * Verdict accuracy.
  *
- * Every case here corresponds to a bug that shipped. The project's whole claim is that its
- * numbers are honest, so a wrong verdict is not a cosmetic defect — it is the product
- * failing at the only thing it does.
+ * The project's whole claim is that its numbers are honest, so a confident wrong verdict is
+ * not a cosmetic defect — it is the product failing at the only thing it does. Each case
+ * below pins one way a verdict could be reached on evidence that does not support it.
  */
 
 import test from 'node:test';

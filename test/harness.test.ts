@@ -1,9 +1,9 @@
 /**
- * Regression tests for class inference.
+ * Class inference, pinned from both directions.
  *
- * An earlier pass matched "avoid", "security" and "don't", which classified almost every
- * claim as prevention. Prevention claims are protected from eviction, so the tool reported
- * a dead share of 1% and was useless. These tests exist so that never comes back.
+ * Prevention claims are protected from eviction, so this classifier decides what the tool
+ * is allowed to judge at all. Too wide and it covers the whole harness and reports nothing;
+ * too narrow and a real prohibition gets condemned. Both failure modes are asserted here.
  */
 
 import test from 'node:test';

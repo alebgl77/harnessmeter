@@ -12,10 +12,9 @@ shape of the claim and the verdict is enough to start.
 
 **2. The class inference.** `inferClass()` in [`src/harness.ts`](src/harness.ts) decides
 whether a claim is `prevention`, and prevention claims are protected from eviction. It has
-already been wrong once in the other direction — an early version matched `avoid` and
-`security`, protected almost everything, and drove dead share to a meaningless 1%. It is
-the part most likely to be wrong on someone else's harness. Tests for it live in
-[`test/harness.test.ts`](test/harness.test.ts).
+to be narrow enough not to cover the whole harness and wide enough to catch a real
+prohibition, which makes it the part most likely to misjudge someone else's writing style.
+Tests live in [`test/harness.test.ts`](test/harness.test.ts).
 
 **3. The cache arithmetic.** [`src/pricing.ts`](src/pricing.ts) is the project's central
 claim. If a multiplier, a TTL rule or a model rate is wrong, everything downstream is

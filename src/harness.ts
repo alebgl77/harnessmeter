@@ -22,12 +22,12 @@ export function estTokens(chars: number): number {
 }
 
 /**
- * Prevention detection has to be surgical.
+ * Prevention detection is surgical by design.
  *
  * A prevention rule is protected from eviction because its yield is inverted — it looks
- * useless precisely because it works. But protection that fires too easily swallows the
- * whole harness and the tool reports nothing. Weak markers ("avoid", "security", "don't")
- * appear in almost any technical prose, so they are deliberately not here.
+ * useless precisely because it works. Protection that fires too easily covers the whole
+ * harness and the tool reports nothing, so weak markers ("avoid", "security", "don't"),
+ * which appear in almost any technical prose, are deliberately excluded.
  *
  * A claim is prevention only when a STRONG prohibition or a secret-family noun appears
  * inside something that actually reads as a rule — a bullet, a numbered item, or a short

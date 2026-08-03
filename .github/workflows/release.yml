@@ -60,20 +60,18 @@ jobs:
     name: publish to npm
     needs: verify
     runs-on: ubuntu-latest
-    # No `environment:` on purpose. Declaring one changes the OIDC subject claim from
-    # `repo:OWNER/REPO:ref:refs/tags/vX` to `repo:OWNER/REPO:environment:NAME`, which then
-    # fails to match a trusted publisher registered without an environment. If you add an
-    # environment here, set the matching field on npmjs.com in the same change.
+    # No `environment:` here. Declaring one rewrites the OIDC subject claim from
+    # `repo:OWNER/REPO:ref:refs/tags/vX` to `repo:OWNER/REPO:environment:NAME`, which must
+    # then match the Environment field on npmjs.com. Change both together or neither.
     permissions:
       contents: read
       id-token: write # required for OIDC trusted publishing
     steps:
       - uses: actions/checkout@v4
 
-      # Deliberately NO `registry-url` here. That option makes setup-node write an .npmrc
-      # containing `_authToken=${NODE_AUTH_TOKEN}`, and with no such secret set it resolves
-      # to an EMPTY token. npm then authenticates with nothing rather than falling back to
-      # OIDC, and the publish fails with a 404 on PUT that reads like a missing package.
+      # No `registry-url` here: it makes setup-node write an .npmrc with
+      # `_authToken=${NODE_AUTH_TOKEN}`, which resolves to an empty token when no such
+      # secret exists and takes precedence over the OIDC exchange.
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
