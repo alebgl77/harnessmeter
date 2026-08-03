@@ -45,11 +45,22 @@ export async function detectAgent(): Promise<AgentInfo> {
   return { kind: 'none', bin: '' };
 }
 
+/**
+ * Windows needs a shell to resolve a bare command to its `.cmd` shim — but only for a bare
+ * command. Running an explicit path through a shell breaks the moment that path contains a
+ * space (`C:\Program Files\...` becomes two words), and it widens the injection surface for
+ * nothing. So the shell is used exactly where it is required and nowhere else.
+ */
+function needsShell(bin: string): boolean {
+  if (process.platform !== 'win32') return false;
+  return !/[\\/]/.test(bin);
+}
+
 function run(bin: string, args: string[], stdin: string, timeoutMs: number): Promise<string> {
   return new Promise((resolve, reject) => {
     const child = spawn(bin, args, {
       stdio: ['pipe', 'pipe', 'pipe'],
-      shell: process.platform === 'win32',
+      shell: needsShell(bin),
     });
     let out = '';
     let err = '';

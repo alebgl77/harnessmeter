@@ -42,10 +42,10 @@ function flamegraph(a: Analysis): string {
     });
   }
   segments.push({
-    label: 'base system prompt + MCP tool schemas',
+    label: 'unattributed remainder',
     tokens: a.residualTokens,
     color: 'var(--rust)',
-    note: 'residual — measured minus attributed',
+    note: 'composition unknown',
   });
 
   const bars = segments
@@ -190,12 +190,12 @@ border-radius:6px;padding:12px 16px;color:var(--mut);font-size:12.5px;margin:14p
 
 <h2>CONTEXT — WHERE THE ALWAYS-ON PREFIX GOES</h2>
 ${flamegraph(a)}
-<div class="note">Median first-turn prompt is <strong>${n(a.medianPrefixTokens)} tokens</strong> — an <strong>upper bound</strong> on the resident prefix, because it also contains the opening user message, which the billed totals do not let us separate out. At ${a.medianTurnsPerSession} turns per session, prompt caching makes that prefix <strong>${ratio.toFixed(1)}× cheaper</strong> than the tokens-×-turns figure quoted everywhere else. The residual is what we measured but cannot attribute to a file: Claude Code's own system prompt plus MCP tool schemas, whose size is only knowable at runtime.</div>
+<div class="note">Median first-turn prompt is <strong>${n(a.medianPrefixTokens)} tokens</strong> — an <strong>upper bound</strong> on the resident prefix, because it also contains the opening user message, which the billed totals do not let us separate out. At ${a.medianTurnsPerSession} turns per session, prompt caching makes that prefix <strong>${ratio.toFixed(1)}× cheaper</strong> than the tokens-×-turns figure quoted everywhere else. The <strong>unattributed remainder</strong> is what we measured but cannot tie to a harness file. It is not a single thing: Claude Code's own system prompt and MCP tool schemas are in there, and so is the opening user message and anything else injected into that turn. We do not report a breakdown of it, because we have not measured one.</div>
 
 <h2>DEAD SHARE</h2>
 <div class="card"><div class="k">of attributed harness context, with no observable consequence</div>
 <div class="v" style="color:${a.deadSharePct > 50 ? 'var(--rust)' : a.deadSharePct > 25 ? 'var(--amber)' : 'var(--green)'}">${a.deadSharePct.toFixed(0)}%<small> of ${n(a.harnessEstTokens)} tok</small></div></div>
-<div class="note">This percentage is scoped to the context we can attribute to a file — ${n(a.harnessEstTokens)} tokens, or ${a.medianPrefixTokens > 0 ? ((a.harnessEstTokens / a.medianPrefixTokens) * 100).toFixed(0) : '0'}% of your ${n(a.medianPrefixTokens)}-token prefix. The remaining ${n(a.residualTokens)} tokens are the base system prompt and MCP tool schemas; harnessmeter cannot see inside them, so they are <strong>not</strong> counted as either live or dead. Reporting one number as if it covered the whole prefix would be the exact error this tool exists to correct.</div>
+<div class="note">This percentage is scoped to the context we can attribute to a file — ${n(a.harnessEstTokens)} tokens, or ${a.medianPrefixTokens > 0 ? ((a.harnessEstTokens / a.medianPrefixTokens) * 100).toFixed(0) : '0'}% of your ${n(a.medianPrefixTokens)}-token prefix. The remaining ${n(a.residualTokens)} tokens are unattributed — harnessmeter cannot tie them to a file or see inside them, so they are <strong>not</strong> counted as either live or dead. Reporting one number as if it covered the whole prefix would be the exact error this tool exists to correct.</div>
 
 <h2>LEASE LEDGER</h2>
 ${ledger(a)}

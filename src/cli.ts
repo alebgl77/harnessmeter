@@ -110,9 +110,15 @@ async function main() {
   }
 
   const cwd = process.cwd();
-  const projectDir = args.all ? undefined : findProjectDir(cwd);
 
-  if (!args.all && !projectDir) {
+  // Two different things, and conflating them is what let `--all` compare a project's
+  // claims against other projects' sessions:
+  //   currentProject — which project's harness we are judging. Always the cwd's.
+  //   sessionProject — which transcripts to read. Widened by --all.
+  const currentProject = findProjectDir(cwd);
+  const sessionProject = args.all ? undefined : currentProject;
+
+  if (!args.all && !currentProject) {
     const known = listProjectDirs().length;
     process.stderr.write(
       `\n  No Claude Code transcripts found for this directory.\n` +
@@ -124,7 +130,7 @@ async function main() {
     return;
   }
 
-  const sessions = await scanSessions({ project: projectDir, limit: args.limit });
+  const sessions = await scanSessions({ project: sessionProject, limit: args.limit });
   if (sessions.length === 0) {
     process.stderr.write('\n  No sessions with usage data found.\n\n');
     process.exitCode = 1;
@@ -136,7 +142,7 @@ async function main() {
     claims: prepared.claims,
     sessions,
     bodies: prepared.bodies,
-    currentProject: projectDir,
+    currentProject,
   });
 
   let t2: T2Result | undefined;
@@ -166,7 +172,7 @@ async function main() {
     }
   }
 
-  const analysis = analyze(cwd, sessions, prepared, t2, projectDir);
+  const analysis = analyze(cwd, sessions, prepared, t2, currentProject);
 
   if (args.json) {
     process.stdout.write(

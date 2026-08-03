@@ -13,7 +13,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { encodeCwd, readSession } from '../src/transcript.ts';
-import { extractJson } from '../src/agent.ts';
+import { ask, extractJson } from '../src/agent.ts';
 
 function fixture(lines: unknown[]): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hm-'));
@@ -139,4 +139,84 @@ test('json is recovered from fenced or bare model output', () => {
   assert.deepEqual(extractJson('```json\n{"a":1}\n```'), { a: 1 });
   assert.deepEqual(extractJson('sure, here: {"a":2} hope that helps'), { a: 2 });
   assert.equal(extractJson('no object here'), undefined);
+});
+
+// ── shell commands ──────────────────────────────────────────────────────────────────
+
+test('bash and powershell command lines are captured', async () => {
+  const file = fixture([
+    assistant({ input_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, output_tokens: 1 }, [
+      { type: 'tool_use', name: 'Bash', input: { command: 'npm test -- --ci' } },
+      { type: 'tool_use', name: 'PowerShell', input: { command: 'Get-ChildItem' } },
+      { type: 'tool_use', name: 'Edit', input: { command: 'not a shell call' } },
+    ]),
+  ]);
+  const s = await readSession(file, 'proj');
+  assert.ok(s);
+  assert.deepEqual(s.turns[0].commands, ['npm test -- --ci', 'Get-ChildItem']);
+});
+
+test('a command line is truncated to 400 characters', async () => {
+  const long = 'echo ' + 'x'.repeat(1000);
+  const file = fixture([
+    assistant({ input_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, output_tokens: 1 }, [
+      { type: 'tool_use', name: 'Bash', input: { command: long } },
+    ]),
+  ]);
+  const s = await readSession(file, 'proj');
+  assert.ok(s);
+  assert.equal(s.turns[0].commands[0].length, 400);
+  assert.ok(long.startsWith(s.turns[0].commands[0]));
+});
+
+test('a shell call with no command string yields no command', async () => {
+  const file = fixture([
+    assistant({ input_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, output_tokens: 1 }, [
+      { type: 'tool_use', name: 'Bash', input: {} },
+    ]),
+  ]);
+  const s = await readSession(file, 'proj');
+  assert.ok(s);
+  assert.deepEqual(s.turns[0].commands, []);
+});
+
+// ── agent process failures ──────────────────────────────────────────────────────────
+
+test('asking with no agent installed fails loudly rather than silently', async () => {
+  await assert.rejects(
+    () => ask({ kind: 'none', bin: '' }, 'anything'),
+    /no local agent CLI found/i,
+  );
+});
+
+test('a missing agent binary rejects instead of hanging', async () => {
+  await assert.rejects(
+    () => ask({ kind: 'claude', bin: 'harnessmeter-no-such-binary' }, 'x', { timeoutMs: 20_000 }),
+    (e: Error) => e instanceof Error,
+  );
+});
+
+test('an agent that never answers is cut off by the timeout', async () => {
+  // The codex path spawns `<bin> exec -`, so a file named `exec` in the working directory
+  // makes Node run our script and receive the rest as argv. It then hangs, which is the
+  // only way to exercise the timeout rather than an immediate spawn failure.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hm-hang-'));
+  fs.writeFileSync(path.join(dir, 'exec'), 'setInterval(() => {}, 1000);\n');
+  const cwd = process.cwd();
+  process.chdir(dir);
+  try {
+    await assert.rejects(
+      () => ask({ kind: 'codex', bin: process.execPath }, 'x', { timeoutMs: 500 }),
+      /timed out/i,
+    );
+  } finally {
+    process.chdir(cwd);
+    // Windows holds the directory until the killed child fully exits. It is a temp dir;
+    // failing to remove it must not fail the test.
+    try {
+      fs.rmSync(dir, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+    } catch {
+      /* the OS will reclaim it */
+    }
+  }
 });

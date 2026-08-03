@@ -152,7 +152,15 @@ export type Analysis = {
   unknownModels: string[];
   /** Sum of estimated harness claim sizes. Estimated. */
   harnessEstTokens: number;
-  /** medianPrefix - harnessEst: base system prompt + MCP tool schemas. */
+  /**
+   * medianPrefixTokens - harnessEstTokens: everything in the first-turn prompt we cannot
+   * attribute to a harness file.
+   *
+   * Its composition is NOT known. It contains the base system prompt and MCP tool schemas,
+   * but also the opening user message, any attachment or system reminder injected into that
+   * turn, and whatever else the harness we can read does not account for. Describing it as
+   * "base prompt + MCP schemas" states a decomposition we have not measured.
+   */
   residualTokens: number;
   medianTurnsPerSession: number;
   models: Record<string, number>;

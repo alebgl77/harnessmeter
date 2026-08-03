@@ -16,6 +16,48 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **Patch generator.** Emit the demotion as a reviewable diff rather than a description.
 - **Readers for other harnesses.** Codex and Antigravity transcript formats.
 
+## [0.1.3] — 2026-07-28
+
+Completes the `--all` scoping work and stops the report describing a remainder it has not
+measured.
+
+### Changed — verdict accuracy
+
+- **`--all` no longer mixes session populations.** The project being analysed and the set of
+  transcripts to read are now separate values: widening the scan no longer widens the
+  population a project's claims are judged against. 0.1.2 fixed this only for runs without
+  `--all`, which is the one mode where it could not occur.
+- **The unattributed remainder is named for what it is.** Both reports previously described
+  it as "base system prompt + MCP tool schemas". It also contains the opening user message
+  and anything else injected into that turn, and no breakdown of it has been measured, so
+  none is reported.
+
+### Fixed
+
+- **An agent binary whose path contains a space could not be launched on Windows.** A bare
+  command still resolves through the shell so `.cmd` shims work; an explicit path no longer
+  does, which also narrows the injection surface.
+- Identifiers reaching the T2 prompt — tool names, skill names, claim ids — are reduced to
+  `[A-Za-z0-9_.:/-]`, and the session digest is serialised as JSON rather than free-form
+  text, so a hostile name lands inside a string literal instead of becoming prompt structure.
+
+### Added
+
+- End-to-end tests through the CLI entry point, including the `--all` scoping paths. They
+  target `src/` rather than `bin/`, because the bin entry prefers a built `dist/` and a
+  stale one would make every assertion pass while testing nothing.
+- Coverage for shell-command extraction and truncation, unpriced models, the first-turn
+  upper bound, the unattributed remainder, T2 identifier sanitisation, T2 consent, agent
+  process failures and timeouts, and HTML escaping. 68 tests.
+
+### Release process
+
+- `package-lock.json` is committed and CI installs with `npm ci`.
+- GitHub Actions are pinned by commit SHA; npm is pinned to an exact version.
+- One tarball is built, verified and published — the publish job no longer rebuilds it.
+- Publishing is restricted to `refs/tags/v*`. A manual run must name an existing tag whose
+  version matches `package.json`; it cannot publish a branch.
+
 ## [0.1.2] — 2026-07-28
 
 Accuracy release. Several verdicts could be wrong in ways that mattered, so **re-run any
@@ -104,7 +146,8 @@ Initial implementation.
 - **The primary action is demotion, not deletion.** Moving an always-on block to on-demand
   is a large win at near-zero risk. Deletion is the rare case.
 
-[Unreleased]: https://github.com/alebgl77/harnessmeter/compare/v0.1.2...HEAD
+[Unreleased]: https://github.com/alebgl77/harnessmeter/compare/v0.1.3...HEAD
+[0.1.3]: https://github.com/alebgl77/harnessmeter/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/alebgl77/harnessmeter/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/alebgl77/harnessmeter/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/alebgl77/harnessmeter/releases/tag/v0.1.0

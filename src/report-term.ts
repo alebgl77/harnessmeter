@@ -57,7 +57,7 @@ export function renderTerminal(a: Analysis): string {
   p(`    median first turn     ${n(a.medianPrefixTokens).padStart(12)} tok`);
   p(`    ${dim('includes the opening user message, which cannot be separated')}`);
   p(`    ${grey('├─ harness files')}      ${grey(n(a.harnessEstTokens).padStart(12) + ' tok  (estimated)')}`);
-  p(`    ${grey('└─ base + mcp schemas')} ${grey(n(a.residualTokens).padStart(12) + ' tok  (residual)')}`);
+  p(`    ${grey('└─ unattributed')}       ${grey(n(a.residualTokens).padStart(12) + ' tok  (composition unknown)')}`);
   p();
   p(
     `    ${dim(`at ${a.medianTurnsPerSession} turns/session, prompt caching makes the prefix`)}`,
@@ -79,7 +79,7 @@ export function renderTerminal(a: Analysis): string {
   p(
     `    ${dim(`scope: those claims are ${attributedPct.toFixed(0)}% of your ${n(a.medianPrefixTokens)}-tok prefix.`)}`,
   );
-  p(`    ${dim(`the other ${n(a.residualTokens)} tok is base prompt + MCP schemas, not judged here.`)}`);
+  p(`    ${dim(`the other ${n(a.residualTokens)} tok is unattributed and not judged here.`)}`);
   p();
 
   // ---- ledger ------------------------------------------------------------------

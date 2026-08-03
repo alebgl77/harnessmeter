@@ -52,24 +52,42 @@ export type T2Result = {
   model: string;
 };
 
-/** Shape only. Deliberately contains nothing a reader could reconstruct work from. */
+/**
+ * Identifiers reaching the prompt are reduced to an allowlist.
+ *
+ * Tool and skill names come from transcripts, so an MCP server can name a tool anything at
+ * all — including something shaped like an instruction, a closing tag, or a line break that
+ * would restructure the prompt around it. Stripping control characters is not enough;
+ * anything outside `[A-Za-z0-9_.:/-]` becomes `_`, which cannot form syntax.
+ */
+export function ident(v: unknown, max: number): string {
+  const s = String(v ?? '').replace(/[^A-Za-z0-9_.:/-]/g, '_');
+  return (s.slice(0, max) || '_');
+}
+
+/**
+ * Shape only, serialised as JSON.
+ *
+ * Nothing here could reconstruct the work: turn counts and tool tallies, no message text,
+ * no file contents, no paths. Emitting it as a JSON value rather than free-form lines means
+ * a hostile identifier lands inside a string literal instead of becoming prompt structure.
+ */
 function digest(sessions: Session[]): string {
-  return sessions
-    .slice(0, SESSIONS_SAMPLED)
-    .map((s, i) => {
-      const tally = new Map<string, number>();
-      for (const t of s.turns) for (const name of t.tools) tally.set(name, (tally.get(name) ?? 0) + 1);
-      const tools = [...tally]
-        .sort((a, b) => b[1] - a[1])
-        .slice(0, 10)
-        // Tool names come from transcripts and can carry arbitrary MCP server and tool
-        // names. They are data in a prompt, so they get the same treatment as any other.
-        .map(([n, c]) => `${sanitize(n, 60)}x${c}`)
-        .join(' ');
-      const skills = [...s.skillsUsed].slice(0, 5).map((k) => sanitize(k, 40)).join(',') || '-';
-      return `s${i + 1}: ${s.turns.length} turns | ${tools || 'no tools'} | skills: ${skills}`;
-    })
-    .join('\n');
+  const rows = sessions.slice(0, SESSIONS_SAMPLED).map((s, i) => {
+    const tally = new Map<string, number>();
+    for (const t of s.turns) for (const name of t.tools) tally.set(name, (tally.get(name) ?? 0) + 1);
+    const tools: Record<string, number> = {};
+    for (const [n, c] of [...tally].sort((a, b) => b[1] - a[1]).slice(0, 10)) {
+      tools[ident(n, 60)] = c;
+    }
+    return {
+      session: `s${i + 1}`,
+      turns: s.turns.length,
+      tools,
+      skills: [...s.skillsUsed].slice(0, 5).map((k) => ident(k, 40)),
+    };
+  });
+  return JSON.stringify(rows, null, 1);
 }
 
 function buildPrompt(batch: Claim[], bodies: Map<string, string>, sessionDigest: string): string {
@@ -82,7 +100,7 @@ function buildPrompt(batch: Claim[], bodies: Map<string, string>, sessionDigest:
         .replace(/<\/?rule[^>]*>/gi, '')
         .trim()
         .slice(0, CLAIM_CHARS);
-      return `<rule id="${sanitize(c.id, 120)}">\n${body}\n</rule>`;
+      return `<rule id="${ident(c.id, 120)}">\n${body}\n</rule>`;
     })
     .join('\n\n');
 
@@ -166,12 +184,16 @@ export async function runT2(
         res.usage.outputTokens;
     }
 
-    const known = new Set(batch.map((c) => c.id));
+    // Ids go out normalised, so verdicts come back in that form. Map them home rather
+    // than trusting the response to echo something we never sent.
+    const known = new Map(batch.map((c) => [ident(c.id, 120), c.id]));
     const parsed = extractJson(res.text) as { verdicts?: T2Verdict[] } | undefined;
-    for (const v of parsed?.verdicts ?? []) {
+    for (const raw of parsed?.verdicts ?? []) {
       // Only accept verdicts for claims we actually asked about in this batch — a
       // response cannot introduce an id of its own choosing.
-      if (!v?.id || !known.has(v.id)) continue;
+      const id = raw?.id ? known.get(String(raw.id)) : undefined;
+      if (!id) continue;
+      const v = { ...raw, id };
       const outcome: T2Outcome = ['complied', 'violated', 'not-applicable', 'unjudgeable'].includes(
         v.outcome,
       )

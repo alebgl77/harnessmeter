@@ -23,9 +23,9 @@ jobs:
         os: [ubuntu-latest, windows-latest, macos-latest]
         node: ['22.18', '24']
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: ${{ matrix.node }}
 
@@ -51,8 +51,8 @@ jobs:
     name: version guard rejects old node
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: '20'
       - name: old node gets an explanation, not a syntax error
@@ -68,14 +68,14 @@ jobs:
     name: typecheck
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: '24'
-      - name: install typescript only
-        run: npm install --no-save --no-package-lock typescript@^5.7 @types/node@^22
+      - name: install from the lockfile
+        run: npm ci
       - name: tsc --noEmit
-        run: npx tsc --noEmit
+        run: npm run typecheck
 
   package:
     # A package that works from a checkout and fails from node_modules is the failure mode
@@ -88,20 +88,20 @@ jobs:
       matrix:
         node: ['20', '24']
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: '24'
 
       - name: build and pack
         run: |
-          npm install --no-package-lock
+          npm ci
           npm pack
           mv harnessmeter-*.tgz /tmp/harnessmeter.tgz
 
       # Re-pin Node so the install is exercised on the version under test, not the builder.
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: ${{ matrix.node }}
 
