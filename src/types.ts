@@ -16,6 +16,12 @@ export type Turn = {
   usage: TurnUsage;
   /** Tool names invoked in this turn, e.g. "Edit", "mcp__chrome-devtools__navigate_page" */
   tools: string[];
+  /**
+   * Shell commands run this turn, truncated. A rule that prescribes `npm test` leaves no
+   * trace in tool *names* — every one of them is just "Bash" — so without these, any
+   * command-prescribing rule is unfalsifiable and lands as false ballast.
+   */
+  commands: string[];
   timestamp?: string;
 };
 
@@ -33,8 +39,10 @@ export type Session = {
   subagentsUsed: Set<string>;
   /**
    * Total prompt size on the first assistant turn: input + cache reads + cache writes.
-   * This is the always-on prefix — base system prompt + harness + tool schemas — measured,
-   * not estimated.
+   *
+   * This is an UPPER BOUND on the resident prefix, not the prefix itself: it also contains
+   * the opening user message, which we cannot separate out from the billed totals. Reported
+   * as a bound everywhere it surfaces.
    */
   firstTurnPromptTokens: number;
 };
@@ -71,6 +79,12 @@ export type Claim = {
   id: string;
   label: string;
   kind: ClaimKind;
+  /**
+   * Where the claim lives, which decides which sessions can testify about it.
+   * A `~/.claude` claim is loaded in every project; a project claim only in its own.
+   * Judging a project claim against another project's sessions manufactures ballast.
+   */
+  scope: 'project' | 'user';
   class: ClaimClass;
   /** True when the class was inferred rather than declared. Never applied silently. */
   classInferred: boolean;
@@ -128,8 +142,14 @@ export type Analysis = {
     cacheWrite1h: number;
     output: number;
   };
-  /** Median measured always-on prefix across sessions. Exact. */
+  /** Median first-turn prompt across sessions — an upper bound on the resident prefix. */
   medianPrefixTokens: number;
+  /**
+   * Models seen in the transcripts whose rate we do not know. Their turns are priced at a
+   * fallback rate, so any dollar figure is an estimate rather than a reading whenever this
+   * is non-empty.
+   */
+  unknownModels: string[];
   /** Sum of estimated harness claim sizes. Estimated. */
   harnessEstTokens: number;
   /** medianPrefix - harnessEst: base system prompt + MCP tool schemas. */

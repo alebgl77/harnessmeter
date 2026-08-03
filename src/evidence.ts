@@ -20,6 +20,7 @@ const TOOL_VOCAB = [
   'NotebookEdit', 'TaskCreate', 'TaskUpdate', 'PowerShell', 'ToolSearch',
 ];
 
+/** Commands a rule may prescribe, and the probe that looks for them in a shell trace. */
 const COMMAND_PATTERNS: { re: RegExp; probe: RegExp }[] = [
   { re: /\bpytest\b/i, probe: /\bpytest\b/i },
   { re: /\bnpm (run )?test\b/i, probe: /\bnpm (run )?test\b/i },
@@ -52,30 +53,69 @@ export type EvidenceInput = {
   sessions: Session[];
   /** Full text per claim id, so T1 can look for checkable signals. */
   bodies: Map<string, string>;
+  /**
+   * Transcript directory of the project being analysed. Project-scope claims are only
+   * judged against its sessions; without this, `--all` measures a project's CLAUDE.md
+   * against other projects' work and manufactures ballast out of irrelevance.
+   */
+  currentProject?: string;
 };
 
-export function runEvidence({ claims, sessions, bodies }: EvidenceInput): Map<string, ClaimEvidence> {
-  const out = new Map<string, ClaimEvidence>();
-  const total = sessions.length;
+type Index = {
+  sessions: Session[];
+  skillHits: Map<string, number>;
+  mcpHits: Map<string, number>;
+  agentHits: Map<string, number>;
+};
 
-  // Pre-index what actually happened, once.
+function buildIndex(sessions: Session[]): Index {
   const skillHits = new Map<string, number>();
   const mcpHits = new Map<string, number>();
   const agentHits = new Map<string, number>();
-  const toolHits = new Map<string, number>();
-  const bashLines: string[] = [];
-
   for (const s of sessions) {
     for (const k of s.skillsUsed) skillHits.set(k, (skillHits.get(k) ?? 0) + 1);
     for (const k of s.mcpServersUsed) mcpHits.set(k, (mcpHits.get(k) ?? 0) + 1);
     for (const k of s.subagentsUsed) agentHits.set(k, (agentHits.get(k) ?? 0) + 1);
-    const seen = new Set<string>();
-    for (const t of s.turns) for (const name of t.tools) seen.add(name);
-    for (const name of seen) toolHits.set(name, (toolHits.get(name) ?? 0) + 1);
   }
+  return { sessions, skillHits, mcpHits, agentHits };
+}
+
+export function runEvidence({
+  claims,
+  sessions,
+  bodies,
+  currentProject,
+}: EvidenceInput): Map<string, ClaimEvidence> {
+  const out = new Map<string, ClaimEvidence>();
+
+  // A ~/.claude claim is loaded in every session; a project claim only in its own.
+  // Judging each against the wrong population is how false ballast is made.
+  const userIndex = buildIndex(sessions);
+  const projectSessions = currentProject
+    ? sessions.filter((s) => s.project === currentProject)
+    : sessions;
+  const projectIndex = buildIndex(projectSessions);
+  const indexFor = (claim: Claim): Index => (claim.scope === 'user' ? userIndex : projectIndex);
 
   for (const claim of claims) {
     const body = bodies.get(claim.id) ?? readClaimBody(claim);
+    const idx = indexFor(claim);
+    const { skillHits, mcpHits, agentHits } = idx;
+    const total = idx.sessions.length;
+
+    // Nothing to testify. Silence is not evidence of uselessness.
+    if (total === 0) {
+      out.set(claim.id, {
+        claimId: claim.id,
+        tier: 'none',
+        verdict: claim.protected ? 'protected' : 'unproven',
+        firedIn: 0,
+        observedIn: 0,
+        note: 'no sessions in scope for this claim — nothing observed either way',
+      });
+      continue;
+    }
+
     let ev: ClaimEvidence;
 
     switch (claim.kind) {
@@ -118,13 +158,25 @@ export function runEvidence({ claims, sessions, bodies }: EvidenceInput): Map<st
           break;
         }
         let fired = 0;
-        for (const s of sessions) {
+        for (const s of idx.sessions) {
           let hit = false;
           for (const t of s.turns) {
-            if (tools.some((tool) => t.tools.includes(tool))) { hit = true; break; }
+            if (tools.length && tools.some((tool) => t.tools.includes(tool))) { hit = true; break; }
+            // Every shell call is named "Bash", so a prescribed command can only be found
+            // in the command line itself.
+            if (commands.length && t.commands.some((c) => commands.some((p) => p.test(c)))) {
+              hit = true;
+              break;
+            }
           }
           if (hit) fired++;
         }
+        const checked = [
+          tools.length ? `${tools.length} tool name${tools.length === 1 ? '' : 's'}` : '',
+          commands.length ? `${commands.length} command${commands.length === 1 ? '' : 's'}` : '',
+        ]
+          .filter(Boolean)
+          .join(' + ');
         ev = {
           claimId: claim.id,
           tier: 'T1',
@@ -132,8 +184,8 @@ export function runEvidence({ claims, sessions, bodies }: EvidenceInput): Map<st
           firedIn: fired,
           observedIn: total,
           note: fired > 0
-            ? `prescribed behaviour observed in ${fired} of ${total} sessions`
-            : `prescribed behaviour never observed across ${total} sessions`,
+            ? `prescribed behaviour (${checked}) observed in ${fired} of ${total} sessions`
+            : `prescribed behaviour (${checked}) never observed across ${total} sessions`,
         };
       }
     }

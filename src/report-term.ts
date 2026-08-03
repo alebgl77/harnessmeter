@@ -42,13 +42,20 @@ export function renderTerminal(a: Analysis): string {
   p(`    output                ${n(b.output).padStart(12)}`);
   p(`    ${bold('api-equivalent')}        ${bold('$' + a.spendUsd.toFixed(2))}`);
   p(`    ${dim('list-price value of these tokens — not an invoice')}`);
+  if (a.unknownModels.length) {
+    p(
+      `    ${amber('estimated')} ${dim(`— ${a.unknownModels.length} unpriced model${a.unknownModels.length === 1 ? '' : 's'} billed at a fallback rate:`)}`,
+    );
+    p(`    ${dim(a.unknownModels.slice(0, 3).join(', ').slice(0, 68))}`);
+  }
   p();
 
   // ---- prefix ------------------------------------------------------------------
   const ratio = naiveRatio(a.medianTurnsPerSession);
-  p(`  ${amber('ALWAYS-ON PREFIX')}  ${dim('measured on first turn')}`);
+  p(`  ${amber('ALWAYS-ON PREFIX')}  ${dim('first-turn prompt — an upper bound')}`);
   p();
-  p(`    median prefix         ${n(a.medianPrefixTokens).padStart(12)} tok`);
+  p(`    median first turn     ${n(a.medianPrefixTokens).padStart(12)} tok`);
+  p(`    ${dim('includes the opening user message, which cannot be separated')}`);
   p(`    ${grey('├─ harness files')}      ${grey(n(a.harnessEstTokens).padStart(12) + ' tok  (estimated)')}`);
   p(`    ${grey('└─ base + mcp schemas')} ${grey(n(a.residualTokens).padStart(12) + ' tok  (residual)')}`);
   p();

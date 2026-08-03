@@ -136,6 +136,7 @@ async function main() {
     claims: prepared.claims,
     sessions,
     bodies: prepared.bodies,
+    currentProject: projectDir,
   });
 
   let t2: T2Result | undefined;
@@ -165,7 +166,7 @@ async function main() {
     }
   }
 
-  const analysis = analyze(cwd, sessions, prepared, t2);
+  const analysis = analyze(cwd, sessions, prepared, t2, projectDir);
 
   if (args.json) {
     process.stdout.write(

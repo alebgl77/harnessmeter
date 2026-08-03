@@ -182,11 +182,15 @@ border-radius:6px;padding:12px 16px;color:var(--mut);font-size:12.5px;margin:14p
   <div class="card"><div class="k">cache writes <small>1.25× / 2×</small></div><div class="v">${n(b.cacheWrite5m + b.cacheWrite1h)}</div></div>
   <div class="card"><div class="k">output</div><div class="v">${n(b.output)}</div></div>
 </div>
-<div class="note">Read from your transcripts, including the 5-minute / 1-hour cache-write split, so each write is priced at its own multiplier. Nothing on this row is estimated. The dollar figure is the <strong>list-price value of these tokens</strong>, not a bill — on a subscription plan you did not pay it.</div>
+<div class="note">Read from your transcripts, including the 5-minute / 1-hour cache-write split, so each write is priced at its own multiplier. The dollar figure is the <strong>list-price value of these tokens</strong>, not a bill — on a subscription plan you did not pay it.${
+    a.unknownModels.length
+      ? ` <strong style="color:var(--amber)">Partly estimated:</strong> ${a.unknownModels.length} model${a.unknownModels.length === 1 ? '' : 's'} in these transcripts have no known rate and were priced at a fallback (${esc(a.unknownModels.slice(0, 4).join(', '))}). Treat the total as an estimate, not a reading.`
+      : ' Nothing on this row is estimated.'
+  }</div>
 
 <h2>CONTEXT — WHERE THE ALWAYS-ON PREFIX GOES</h2>
 ${flamegraph(a)}
-<div class="note">Median measured prefix is <strong>${n(a.medianPrefixTokens)} tokens</strong>. At ${a.medianTurnsPerSession} turns per session, prompt caching makes that prefix <strong>${ratio.toFixed(1)}× cheaper</strong> than the tokens-×-turns figure quoted everywhere else. The residual is what we measured but cannot attribute to a file: Claude Code's own system prompt plus MCP tool schemas, whose size is only knowable at runtime.</div>
+<div class="note">Median first-turn prompt is <strong>${n(a.medianPrefixTokens)} tokens</strong> — an <strong>upper bound</strong> on the resident prefix, because it also contains the opening user message, which the billed totals do not let us separate out. At ${a.medianTurnsPerSession} turns per session, prompt caching makes that prefix <strong>${ratio.toFixed(1)}× cheaper</strong> than the tokens-×-turns figure quoted everywhere else. The residual is what we measured but cannot attribute to a file: Claude Code's own system prompt plus MCP tool schemas, whose size is only knowable at runtime.</div>
 
 <h2>DEAD SHARE</h2>
 <div class="card"><div class="k">of attributed harness context, with no observable consequence</div>

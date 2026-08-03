@@ -62,7 +62,9 @@ function digest(sessions: Session[]): string {
       const tools = [...tally]
         .sort((a, b) => b[1] - a[1])
         .slice(0, 10)
-        .map(([n, c]) => `${n}x${c}`)
+        // Tool names come from transcripts and can carry arbitrary MCP server and tool
+        // names. They are data in a prompt, so they get the same treatment as any other.
+        .map(([n, c]) => `${sanitize(n, 60)}x${c}`)
         .join(' ');
       const skills = [...s.skillsUsed].slice(0, 5).map((k) => sanitize(k, 40)).join(',') || '-';
       return `s${i + 1}: ${s.turns.length} turns | ${tools || 'no tools'} | skills: ${skills}`;
@@ -212,18 +214,28 @@ export function mergeT2(
       continue;
     }
 
-    const verdict =
-      v.outcome === 'complied' ? 'load-bearing' : 'ballast';
+    // "The subject never came up" is not evidence that a rule is useless — it is the
+    // absence of an occasion to test it. Treating the two as the same thing condemns
+    // every rule that guards a situation which happens to be rare, which is most of the
+    // rules worth keeping.
+    if (v.outcome === 'not-applicable') {
+      evidence.set(id, {
+        ...ev,
+        tier: 'T2',
+        verdict: 'unproven',
+        note: `T2: no occasion to apply it in the sampled sessions — not evidence either way (${v.why})`,
+      });
+      continue;
+    }
+
     evidence.set(id, {
       ...ev,
       tier: 'T2',
-      verdict,
+      verdict: v.outcome === 'complied' ? 'load-bearing' : 'ballast',
       note:
         v.outcome === 'violated'
           ? `T2: present but not followed — ${v.why || 'rewrite or remove'}`
-          : v.outcome === 'not-applicable'
-            ? `T2: subject never arose in ${t2.verdicts.size ? 'sampled sessions' : 'sessions'} — ${v.why}`
-            : `T2: behaviour consistent with the rule — ${v.why}`,
+          : `T2: behaviour consistent with the rule — ${v.why}`,
     });
   }
 }

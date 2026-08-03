@@ -124,9 +124,19 @@ export async function readSession(file: string, project: string): Promise<Sessio
       if (!usage) continue;
 
       const tools: string[] = [];
+      const commands: string[] = [];
       for (const b of e.message.content ?? []) {
         if (b?.type !== 'tool_use') continue;
         if (typeof b.name === 'string') tools.push(b.name);
+        // Every shell invocation is just "Bash" by name, so a rule that prescribes a
+        // command is invisible without the command line itself. Truncated: we only ever
+        // regex-match against it, and it never leaves the machine.
+        if (
+          (b.name === 'Bash' || b.name === 'PowerShell') &&
+          typeof b.input?.command === 'string'
+        ) {
+          commands.push(b.input.command.slice(0, 400));
+        }
         // Subagent dispatch: the Task tool carries the agent type in its input.
         const sub = b.input?.subagent_type;
         if (typeof sub === 'string') session.subagentsUsed.add(sub);
@@ -139,6 +149,7 @@ export async function readSession(file: string, project: string): Promise<Sessio
         model: String(e.message.model ?? 'unknown'),
         usage,
         tools,
+        commands,
         timestamp: typeof e.timestamp === 'string' ? e.timestamp : undefined,
       };
 

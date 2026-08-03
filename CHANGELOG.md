@@ -4,6 +4,39 @@ All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.2] — 2026-07-28
+
+Correctness release. Every item below was a way the tool could produce a confident wrong
+verdict, which for a measurement instrument is the only defect that really counts. Found by
+an external audit of 0.1.1.
+
+### Fixed
+
+- **Command-prescribing rules were guaranteed false ballast.** A rule saying "always run
+  `npm test`" passed the checkability guard, then fell into a loop that only compared tool
+  *names* — and every shell call is named `Bash`. Zero hits by construction, every time.
+  Shell command lines are now read from the transcripts and matched.
+- **`--all` judged a project's claims against other projects' sessions.** Session scanning
+  went wide while harness extraction stayed local, so unrelated work diluted the
+  denominators. Claims are now judged only where they were actually loaded: `~/.claude`
+  claims against every session, project claims against their own project's.
+- **T2 `not-applicable` was treated as ballast.** "The subject never came up" is the
+  absence of an occasion to test a rule, not evidence it is useless — and reading it as
+  such condemns every rule guarding a rare situation, which is most of the rules worth
+  keeping. It now returns `unproven`.
+- **A claim with no sessions in scope returned a verdict anyway.** It now reports
+  `unproven` with an explicit note. Silence is not evidence.
+- **Unpriced models were billed silently at a fallback rate.** Unknown model ids are now
+  listed and the dollar figure is labelled an estimate whenever any appear.
+- **The first-turn prompt was presented as the resident prefix.** It also contains the
+  opening user message, which the billed totals do not let us separate out, so it is now
+  labelled an upper bound in both reports.
+- Tool names taken from transcripts are sanitised before entering the T2 prompt.
+
+### Added
+
+- `test/evidence.test.ts` — a regression test per bug above. Each one failed before its fix.
+
 ## [0.1.1] — 2026-07-27
 
 First version published to npm. `0.1.0` was tagged but never published, because it could
@@ -78,6 +111,7 @@ First release. Reads real transcripts and produces a real report.
 - **The primary action is demotion, not deletion.** Moving an always-on block to on-demand
   is a large win at near-zero risk. Deletion is the rare case.
 
-[Unreleased]: https://github.com/alebgl77/harnessmeter/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/alebgl77/harnessmeter/compare/v0.1.2...HEAD
+[0.1.2]: https://github.com/alebgl77/harnessmeter/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/alebgl77/harnessmeter/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/alebgl77/harnessmeter/releases/tag/v0.1.0

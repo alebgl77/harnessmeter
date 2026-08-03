@@ -8,7 +8,7 @@
 
 import fs from 'node:fs';
 import type { Analysis, Claim, ClaimEvidence, Proposal, Session } from './types.ts';
-import { alwaysOnCost, turnCostUsd } from './pricing.ts';
+import { alwaysOnCost, isKnownModel, turnCostUsd } from './pricing.ts';
 import { runEvidence } from './evidence.ts';
 import { scanHarness } from './harness.ts';
 import type { T2Result } from './evidence-t2.ts';
@@ -53,20 +53,25 @@ export function analyze(
   sessions: Session[],
   pre?: Prepared,
   t2?: T2Result,
+  currentProject?: string,
 ): Analysis {
   const prepared = pre ?? prepare(cwd);
   const { claims, bodies } = prepared;
   const evidence =
-    prepared.evidence.size > 0 ? prepared.evidence : runEvidence({ claims, sessions, bodies });
+    prepared.evidence.size > 0
+      ? prepared.evidence
+      : runEvidence({ claims, sessions, bodies, currentProject });
 
   // ---- exact aggregates, straight from the transcripts -----------------------------
   const billed = { input: 0, cacheRead: 0, cacheWrite5m: 0, cacheWrite1h: 0, output: 0 };
   const models: Record<string, number> = {};
+  const unknown = new Set<string>();
   let spendUsd = 0;
   let turnCount = 0;
 
   for (const s of sessions) {
     for (const t of s.turns) {
+      if (!isKnownModel(t.model)) unknown.add(t.model);
       billed.input += t.usage.inputTokens;
       billed.cacheRead += t.usage.cacheReadTokens;
       billed.cacheWrite5m += t.usage.cacheWrite5m;
@@ -151,6 +156,7 @@ export function analyze(
     spendUsd,
     billedTokens: billed,
     medianPrefixTokens,
+    unknownModels: [...unknown].sort(),
     harnessEstTokens,
     residualTokens,
     medianTurnsPerSession,

@@ -75,6 +75,7 @@ function mkClaim(
   id: string,
   label: string,
   kind: ClaimKind,
+  scope: 'project' | 'user',
   loading: Loading,
   file: string,
   startLine: number,
@@ -87,6 +88,7 @@ function mkClaim(
     id,
     label,
     kind,
+    scope,
     class: cls,
     classInferred: inferred,
     loading,
@@ -133,7 +135,7 @@ export function extractProseClaims(file: string, scope: 'project' | 'user'): Cla
     if (body.length < 40) return; // ignore trivia
     const id = `${scope}:claude-md:${slug(title)}:${start}`;
     claims.push(
-      mkClaim(id, `${scope === 'user' ? '~/' : ''}CLAUDE.md § ${title}`, 'prose-section', 'always-on', file, start + 1, endLine, body),
+      mkClaim(id, `${scope === 'user' ? '~/' : ''}CLAUDE.md § ${title}`, 'prose-section', scope, 'always-on', file, start + 1, endLine, body),
     );
   };
 
@@ -174,6 +176,7 @@ export function extractSkillClaims(dir: string, scope: 'project' | 'user'): Clai
         `${scope}:skill:${entry}`,
         `skill/${entry}`,
         'skill',
+        scope,
         'on-demand',
         skillFile,
         1,
@@ -201,7 +204,7 @@ export function extractAgentClaims(dir: string, scope: 'project' | 'user'): Clai
     }
     const name = f.replace(/\.md$/, '');
     claims.push(
-      mkClaim(`${scope}:agent:${name}`, `agent/${name}`, 'subagent', 'on-demand', full, 1, body.split(/\r?\n/).length, body),
+      mkClaim(`${scope}:agent:${name}`, `agent/${name}`, 'subagent', scope, 'on-demand', full, 1, body.split(/\r?\n/).length, body),
     );
   }
   return claims;
@@ -230,6 +233,7 @@ export function extractMcpClaims(cwd: string): Claim[] {
     id: `mcp:${name}`,
     label: `mcp/${name}`,
     kind: 'mcp-server' as ClaimKind,
+    scope: 'project' as const,
     class: 'knowledge' as ClaimClass,
     classInferred: true,
     loading: 'always-on' as Loading,
