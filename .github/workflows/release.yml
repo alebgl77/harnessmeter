@@ -37,6 +37,7 @@ jobs:
         run: node --test "test/*.test.ts"
 
       - name: tag must match package.json
+        if: startsWith(github.ref, 'refs/tags/')
         run: |
           tag="${GITHUB_REF_NAME#v}"
           pkg=$(node -p "require('./package.json').version")
@@ -66,14 +67,22 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Deliberately NO `registry-url` here. That option makes setup-node write an .npmrc
+      # containing `_authToken=${NODE_AUTH_TOKEN}`, and with no such secret set it resolves
+      # to an EMPTY token. npm then authenticates with nothing rather than falling back to
+      # OIDC, and the publish fails with a 404 on PUT that reads like a missing package.
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
-          registry-url: 'https://registry.npmjs.org'
 
       # Trusted publishing needs a recent npm; the one bundled with Node may lag.
       - name: update npm
         run: npm install -g npm@latest
+
+      - name: no credentials must be present — OIDC has to be the only path
+        run: |
+          rm -f .npmrc ~/.npmrc
+          echo "npm $(npm --version)"
 
       - name: install build dependencies
         run: npm install --no-package-lock
