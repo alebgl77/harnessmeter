@@ -207,6 +207,29 @@ test('a missing agent binary rejects instead of hanging', async () => {
   );
 });
 
+test('a prompt too large to write in one go still rejects, not crashes', async () => {
+  // The child is already gone when the write happens, so the broken pipe surfaces on
+  // stdin rather than on the child. Unhandled, that EPIPE escapes the promise and takes
+  // the process down instead of rejecting. A one-character prompt usually fits in the pipe
+  // buffer and hides it; this one cannot, so the failure path is the one under test.
+  const huge = 'x'.repeat(4 * 1024 * 1024);
+  await assert.rejects(
+    () => ask({ kind: 'claude', bin: 'harnessmeter-no-such-binary' }, huge, { timeoutMs: 20_000 }),
+    (e: Error) => e instanceof Error,
+  );
+});
+
+test('a failing agent rejects once, with the first outcome', async () => {
+  // Spawn failure, timeout and close can all fire, in any order. Settling twice would
+  // either swallow the real error or resolve a run that never produced anything.
+  const results = await Promise.allSettled(
+    Array.from({ length: 8 }, () =>
+      ask({ kind: 'codex', bin: 'harnessmeter-no-such-binary' }, 'y'.repeat(1024), { timeoutMs: 20_000 }),
+    ),
+  );
+  assert.equal(results.filter((r) => r.status === 'rejected').length, 8);
+});
+
 test('an agent that never answers is cut off by the timeout', async () => {
   // The codex path spawns `<bin> exec -`, so a file named `exec` in the working directory
   // makes Node run our script and receive the rest as argv. It then hangs, which is the

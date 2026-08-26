@@ -64,23 +64,40 @@ function run(bin: string, args: string[], stdin: string, timeoutMs: number): Pro
     });
     let out = '';
     let err = '';
+
+    // A spawn can fail, time out and close, in any order. Whichever outcome lands first is
+    // the one the caller gets; the rest are the same event told twice.
+    let settled = false;
+    const done = (fn: () => void) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      fn();
+    };
+
     const timer = setTimeout(() => {
       child.kill();
-      reject(new Error(`agent timed out after ${Math.round(timeoutMs / 1000)}s`));
+      done(() => reject(new Error(`agent timed out after ${Math.round(timeoutMs / 1000)}s`)));
     }, timeoutMs);
 
     child.stdout.on('data', (d) => (out += d));
     child.stderr.on('data', (d) => (err += d));
-    child.on('error', (e) => {
-      clearTimeout(timer);
-      reject(e);
-    });
+    child.on('error', (e) => done(() => reject(e)));
     child.on('close', (code) => {
-      clearTimeout(timer);
-      if (code !== 0 && !out.trim()) reject(new Error(err.trim() || `agent exited ${code}`));
-      else resolve(out);
+      done(() => {
+        if (code !== 0 && !out.trim()) reject(new Error(err.trim() || `agent exited ${code}`));
+        else resolve(out);
+      });
     });
 
+    // When the binary does not exist the child is already gone by the time we write, and
+    // the broken pipe surfaces on stdin rather than on the child. Unhandled, that EPIPE
+    // escapes this promise and takes the process down instead of rejecting — which is the
+    // opposite of what a missing agent should do. The child's own error and close events
+    // carry the real outcome, so the write failure has nothing to add.
+    child.stdin.on('error', () => {
+      /* reported by 'error' or 'close' */
+    });
     child.stdin.write(stdin);
     child.stdin.end();
   });
