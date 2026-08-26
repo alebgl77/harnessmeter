@@ -256,6 +256,10 @@ and 8,640 turns. The scan was 95% of the run, so this is very nearly all of it.
 
 ## [0.1.5] — 2026-08-23
 
+**Never released on its own.** This work reached npm inside 0.2.0, so there is no `v0.1.5`
+tag and no 0.1.5 on the registry. The entry is kept because the changes are real and 0.2.0's
+own performance section builds directly on them.
+
 Scan performance. No change to what the tool measures or reports: the buffered and
 streaming readers were verified turn-for-turn identical on frozen transcript data
 before shipping.
@@ -442,8 +446,8 @@ Initial implementation.
   is a large win at near-zero risk. Deletion is the rare case.
 
 [Unreleased]: https://github.com/alebgl77/harnessmeter/compare/v0.2.0...HEAD
-[0.2.0]: https://github.com/alebgl77/harnessmeter/compare/v0.1.5...v0.2.0
-[0.1.5]: https://github.com/alebgl77/harnessmeter/compare/v0.1.4...v0.1.5
+[0.2.0]: https://github.com/alebgl77/harnessmeter/compare/v0.1.4...v0.2.0
+[0.1.5]: https://github.com/alebgl77/harnessmeter/compare/v0.1.4...v0.2.0
 [0.1.4]: https://github.com/alebgl77/harnessmeter/compare/v0.1.3...v0.1.4
 [0.1.3]: https://github.com/alebgl77/harnessmeter/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/alebgl77/harnessmeter/compare/v0.1.1...v0.1.2
