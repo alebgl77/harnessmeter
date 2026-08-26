@@ -41,7 +41,10 @@ type Fixture = { home: string; cwd: string; cleanup: () => void };
  * the other never does. If scoping is wrong, the foreign sessions dilute the result.
  */
 function fixture(opts: { otherSessions?: number; projectRule?: string; userRule?: string } = {}): Fixture {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hm-cli-'));
+  // realpath: on macOS the temp tree is behind a symlink, so the path handed out here and
+  // the one the CLI reads from process.cwd() are two spellings of the same directory. A
+  // real session records the resolved one.
+  const root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'hm-cli-')));
   const home = path.join(root, 'home');
   const cwd = path.join(root, 'work');
   fs.mkdirSync(cwd, { recursive: true });

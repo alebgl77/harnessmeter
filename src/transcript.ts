@@ -60,10 +60,8 @@ export function findProjectDir(cwd: string): string | undefined {
   // Above the home directory nothing is a project, and a directory registered for a very
   // high ancestor would otherwise answer for every unrelated repository beneath it.
   const home = path.resolve(os.homedir());
-  let dir = path.resolve(cwd);
 
-  for (let up = 0; up <= MAX_PARENT_WALK; up++) {
-    const key = encodeCwd(dir);
+  const match = (key: string): string | undefined => {
     if (exact.has(key)) return key;
 
     // Case folding is a fallback, not the primary key: on a case-sensitive filesystem
@@ -82,7 +80,17 @@ export function findProjectDir(cwd: string): string | undefined {
       const hits = dirs.filter((d) => d.startsWith(head));
       if (hits.length === 1) return hits[0];
     }
+    return undefined;
+  };
 
+  // A run from project/src belongs to project, so the walk climbs; the deepest match is
+  // the most specific one. Claude Code and harnessmeter both take their working directory
+  // from process.cwd(), which resolves symbolic links, so both see the same path and no
+  // link-following is needed here.
+  let dir = path.resolve(cwd);
+  for (let up = 0; up <= MAX_PARENT_WALK; up++) {
+    const hit = match(encodeCwd(dir));
+    if (hit) return hit;
     if (dir === home) return undefined;
     const parent = path.dirname(dir);
     if (parent === dir) return undefined;

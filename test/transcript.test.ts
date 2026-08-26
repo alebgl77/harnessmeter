@@ -255,7 +255,10 @@ const OS_DIR = process.platform === 'win32' ? 'C--hm-a-b' : '-hm-a-b';
 const SEP = process.platform === 'win32' ? '\\' : '/';
 
 function projectsFixture(dirs: string[]): { home: string; cleanup: () => void } {
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'hm-proj-'));
+  // realpath, because on macOS the temp tree sits behind a symlink and process.cwd()
+  // reports the resolved path. A fixture built from the unresolved one describes a machine
+  // that does not exist, and the assertions then pass or fail for the wrong reason.
+  const home = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'hm-proj-')));
   for (const d of dirs) fs.mkdirSync(path.join(home, 'projects', d), { recursive: true });
   const prev = process.env.CLAUDE_HOME;
   process.env.CLAUDE_HOME = home;
