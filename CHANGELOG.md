@@ -8,13 +8,62 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Planned
 
-- **T3 — natural experiments.** Read `.claude/**` git history as an intervention registry.
-  Different repos adopt the same advice on different dates, which is the setting where
-  staggered difference-in-differences identifies an effect. Free: it is history, not runs.
+- **T3 — natural experiments.** Partly delivered in 0.2.2, and the rest is further away
+  than this entry used to claim. Git now serves as the intervention registry: a claim is
+  dated by the commit that last touched its own lines. The causal half — staggered
+  difference-in-differences — needs many units adopting the same advice on different dates,
+  and that means data across many machines. harnessmeter reads only local files and sends
+  nothing anywhere, so the design that would identify the effect is one this tool has
+  promised never to enable. What remains reachable on one machine is a before-and-after
+  comparison with a placebo check on claims that did not change, reported with its interval
+  and its sample. That is worth building when there is history to validate it against.
 - **T4 — field randomisation.** Vary the harness on runs that were going to happen anyway,
   on dead-classified claims only. A randomised trial at zero incremental cost.
 - **Patch generator.** Emit the demotion as a reviewable diff rather than a description.
 - **Readers for other harnesses.** Codex and Antigravity transcript formats.
+
+## [0.2.2] — 2026-08-27
+
+Dates a claim from the repository instead of the filesystem, where there is one.
+
+### Added — git as the intervention registry
+
+0.2.1 stopped judging a claim on sessions that predated it, using the file's modification
+time. That clock is wrong in three ways it documented and could not fix: it moves when
+anything in the file changes, so editing the top of a `CLAUDE.md` re-dates every rule in it
+and silently narrows the evidence each one is judged against; a clone or a checkout resets
+it; and it says nothing about what the text used to be.
+
+- **A claim is now dated by the commit that last touched its own lines.** Editing one
+  section no longer re-dates the others, and the date survives a clone.
+- **The report says which clock it used**, because a commit that dates the section and a
+  file timestamp that moves for any edit are not the same quality of evidence: *"6 sessions
+  predating when this section last changed not counted"* against *"...when the file was
+  last written"*.
+- **It fails closed.** No git, no repository, a timeout, an unreadable file — the claim
+  falls back to modification time and says so. A wrong date is worse than a coarse one,
+  because it silently changes which sessions a claim is judged against.
+- **It costs nothing worth measuring.** One `git blame --line-porcelain` per file returns the
+  commit behind every line at once, about 100 ms, against roughly 70 ms per claim for
+  `git log -L` — six seconds on an eighty-claim harness, seven times the whole scan. Only
+  prose sections are asked about: a skill is a file, so a per-section date and a per-file
+  one are the same answer. A directory already known not to be a repository settles every
+  directory beneath it without another process, which matters when a harness holds one
+  directory per skill. End to end: 0.85 s before, 0.72 s after.
+
+Most harnesses will see no change. `~/.claude` is rarely a repository, and on the machine
+this was written against not one claim is datable by git — 8 of 18 project directories have
+a `CLAUDE.md` and one of them is versioned. The feature is for the case that matters
+commercially: a team `CLAUDE.md` committed alongside the code it governs.
+
+### Added — tests
+
+- 173 → **179**. `test/history.test.ts` builds real repositories with real commits at fixed
+  dates: a section dated by its own commit rather than the file's, an uncommitted edit
+  dated to now, a file outside any repository, a missing file, a scan that dates a
+  versioned claim by git and an unversioned one by modification time, and a `touch` that
+  moves the filesystem clock while the commit stays put. Nothing is mocked, because what is
+  under test is whether we read git correctly.
 
 ## [0.2.1] — 2026-08-26
 
@@ -491,7 +540,8 @@ Initial implementation.
 - **The primary action is demotion, not deletion.** Moving an always-on block to on-demand
   is a large win at near-zero risk. Deletion is the rare case.
 
-[Unreleased]: https://github.com/alebgl77/harnessmeter/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/alebgl77/harnessmeter/compare/v0.2.2...HEAD
+[0.2.2]: https://github.com/alebgl77/harnessmeter/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/alebgl77/harnessmeter/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/alebgl77/harnessmeter/compare/v0.1.4...v0.2.0
 [0.1.5]: https://github.com/alebgl77/harnessmeter/compare/v0.1.4...v0.2.0

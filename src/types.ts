@@ -1,5 +1,9 @@
 /** Core types. Deliberately small — everything derives from what the transcripts actually contain. */
 
+import type { DateSource } from './history.ts';
+
+export type { DateSource };
+
 /** What a model charged us for a single assistant turn. Read, never estimated. */
 export type TurnUsage = {
   inputTokens: number;
@@ -122,6 +126,15 @@ export type Claim = {
      * from last month.
      */
     modifiedMs: number;
+    /**
+     * Which clock produced that date.
+     *
+     * `git` is the commit behind the lines this claim spans — precise to the section, and it
+     * survives a clone. `mtime` is the file's modification time, which moves for a change
+     * anywhere in the file and is reset by a checkout. They are not equally trustworthy, so
+     * the report says which one it used rather than presenting both as a date.
+     */
+    datedBy: DateSource;
   };
   chars: number;
   /** Calibrated estimate of the whole block. Session-level costs are exact; these are not. */

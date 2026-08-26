@@ -14,6 +14,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { Claim, ClaimClass, ClaimKind, Loading } from './types.ts';
 import { claudeHome } from './transcript.ts';
+import { sectionChangedMs, type DateSource } from './history.ts';
 
 /** Rough but honest. Claude's tokenizer is not public; tiktoken is a different tokenizer. */
 export const CHARS_PER_TOKEN = 3.8;
@@ -31,6 +32,30 @@ export function estTokens(chars: number): number {
  * direction: it can only shrink the evidence a claim is judged on, never inflate it.
  */
 const mtimeCache = new Map<string, number>();
+
+/**
+ * When this claim's text last changed, and how we know.
+ *
+ * The repository is asked first: it can date the section rather than the whole file, and a
+ * clone does not reset it. Modification time answers for everything outside a repository,
+ * which on a typical machine is most of the harness — `~/.claude` is rarely versioned.
+ */
+function datedSource(
+  file: string,
+  startLine: number,
+  endLine: number,
+  kind: ClaimKind,
+): { modifiedMs: number; datedBy: DateSource } {
+  // Only prose sections. They are the claims whose age narrows a verdict, and they are the
+  // only ones where a per-section date says anything a per-file one does not: a skill is a
+  // file, so the two answers are the same, and paying a process per skill to learn that
+  // costs more than the whole transcript scan.
+  const worthAsking = kind === 'prose-section' && startLine > 0;
+  const fromGit = worthAsking ? sectionChangedMs(file, startLine, endLine) : undefined;
+  if (fromGit) return { modifiedMs: fromGit, datedBy: 'git' };
+  const fromFs = modifiedMs(file);
+  return fromFs > 0 ? { modifiedMs: fromFs, datedBy: 'mtime' } : { modifiedMs: 0, datedBy: 'unknown' };
+}
 
 export function modifiedMs(file: string): number {
   const hit = mtimeCache.get(file);
@@ -116,7 +141,7 @@ function mkClaim(
     class: cls,
     classInferred: inferred,
     loading,
-    source: { file, startLine, endLine, modifiedMs: modifiedMs(file) },
+    source: { file, startLine, endLine, ...datedSource(file, startLine, endLine, kind) },
     chars: body.length,
     estTokens: estTokens(body.length),
     alwaysOnTokens:
@@ -482,7 +507,7 @@ function mcpClaim(name: string, file = '.mcp.json'): Claim {
     class: 'knowledge' as ClaimClass,
     classInferred: true,
     loading: 'always-on' as Loading,
-    source: { file, startLine: 0, endLine: 0, modifiedMs: 0 },
+    source: { file, startLine: 0, endLine: 0, modifiedMs: 0, datedBy: 'unknown' },
     chars: 0,
     estTokens: 0, // unknowable statically — reported as part of the residual
     alwaysOnTokens: 0,

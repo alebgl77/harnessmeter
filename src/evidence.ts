@@ -218,7 +218,7 @@ export function runEvidence({
         firedIn: 0,
         observedIn: 0,
         note: idx.pool
-          ? `every session in scope predates the last edit to ${named} — nothing observed of this text`
+          ? `every session in scope predates when ${claim.source.datedBy === 'git' ? 'this section last changed in' : 'the file was last written'} ${named} — nothing observed of this text`
           : 'no sessions in scope for this claim — nothing observed either way',
       });
       continue;
@@ -316,6 +316,7 @@ export function runEvidence({
               total,
             ),
             idx,
+            claim,
           ),
         };
       }
@@ -341,14 +342,20 @@ function t0(claim: Claim, idx: Index, fired: number, total: number, note: string
     verdict: verdictFor(claim, fired, total),
     firedIn: fired,
     observedIn: total,
-    note: withStale(withBound(note, fired, total), idx),
+    note: withStale(withBound(note, fired, total), idx, claim),
   };
 }
 
-/** Sessions set aside because they finished before the claim's file was last written. */
-function withStale(note: string, idx: Index): string {
+/**
+ * Sessions set aside because they finished before this claim's text existed — and which
+ * clock said so, because a commit that dates the section and a file timestamp that moves
+ * for any edit anywhere are not the same quality of evidence.
+ */
+function withStale(note: string, idx: Index, claim: Claim): string {
   const stale = idx.pool - idx.sessions.length;
-  return stale > 0 ? `${note}; ${stale} older session${stale === 1 ? '' : 's'} not counted` : note;
+  if (stale <= 0) return note;
+  const since = claim.source.datedBy === 'git' ? 'this section last changed' : 'the file was last written';
+  return `${note}; ${stale} session${stale === 1 ? '' : 's'} predating when ${since} not counted`;
 }
 
 /**

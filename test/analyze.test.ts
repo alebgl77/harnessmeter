@@ -52,7 +52,7 @@ function claim(over: Partial<Claim> = {}): Claim {
     class: 'workflow',
     classInferred: true,
     loading: 'always-on',
-    source: { file: 'CLAUDE.md', startLine: 1, endLine: 3, modifiedMs: 0 },
+    source: { file: 'CLAUDE.md', startLine: 1, endLine: 3, modifiedMs: 0, datedBy: 'mtime' },
     chars: 400,
     estTokens: 105,
     alwaysOnTokens: 105,
