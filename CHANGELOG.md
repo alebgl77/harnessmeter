@@ -16,6 +16,30 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **Patch generator.** Emit the demotion as a reviewable diff rather than a description.
 - **Readers for other harnesses.** Codex and Antigravity transcript formats.
 
+## [0.1.5] — 2026-08-23
+
+Scan performance. No change to what the tool measures or reports: the buffered and
+streaming readers were verified turn-for-turn identical on frozen transcript data
+before shipping.
+
+### Changed
+
+- **A full `--all` scan is about twice as fast.** Measured on a real corpus of
+  779 transcripts / 631 MB: 4.1 s before, 2.2 s after, sessions and turns identical.
+  Three independent changes, each measured before it was kept:
+  - **Transcripts up to 8 MB are read in one call and split**, replacing readline's
+    per-line event machinery on the path that handles the median (197 KB) and the
+    p95 (1.4 MB) file alike. Larger files stay streamed so memory remains bounded.
+  - **The streaming path splits chunks manually** instead of going through readline —
+    same bounded memory (one 1 MB chunk plus the longest pending line), a fraction of
+    the per-line overhead. A 126 MB transcript drops from 0.91 s to 0.81 s.
+  - **Independent transcripts are read through a bounded pool** (8 in flight) instead
+    of strictly one after another. Order stays newest-first: results land by index.
+- **Lines that cannot contribute are skipped before `JSON.parse`.** Once `cwd` and
+  `gitBranch` are known, only assistant turns and attribution markers can still matter,
+  and both necessarily contain a literal substring the filter checks. Over-approximation
+  only — a prose mention of "assistant" costs one wasted parse, never a lost turn.
+
 ## [0.1.4] — 2026-07-28
 
 Release-pipeline hardening. No change to what the tool measures or reports.
