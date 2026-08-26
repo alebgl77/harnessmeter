@@ -63,14 +63,24 @@ TypeScript directly — which needs Node ≥ 22.18.</sub>
 ## The arithmetic everyone gets wrong
 
 Every "your CLAUDE.md costs you $X" post multiplies tokens by turns. That ignores prompt
-caching, and it is wrong by roughly **7×**.
+caching, and it overstates an always-on block by roughly **5×**.
 
 <p align="center">
   <img src="assets/cache-math.svg" alt="Naive vs cache-weighted token accounting" width="100%">
 </p>
 
-A stable prefix is billed as one write at `1.25×` and then reads at `0.1×`. Getting this
-right is the whole point: an instrument that inflates its own findings is not an instrument.
+A cached prefix is billed as a write at `1.25×` (5-minute TTL) or `2×` (1-hour TTL), and
+as reads at `0.1×` in between. Getting this right is the whole point: an instrument that
+inflates its own findings is not an instrument.
+
+The tempting next step is to assume one write per session. That is also wrong, and
+harnessmeter does not assume it — it **counts** the writes. A cache entry expires with its
+TTL, and compaction or any edit to a harness file invalidates it, so a long session pays
+the write multiplier again and again. On the corpus this was measured against, the median
+session writes its prefix **six times**, at the 1-hour rate. Pricing it as one write at the
+5-minute rate understates a resident block by 1.1× to 2.5×, depending on how long your
+sessions run and how often they go cold — so harnessmeter prints the write count and the
+TTL it measured rather than applying a fixed correction factor.
 
 It also moves the headline metric off dollars. The dominant cost of a bloated harness is
 **attention dilution and window consumed**, not the invoice. So harnessmeter reports
@@ -82,8 +92,13 @@ And it surfaces results you would not have guessed:
   time. Residency beats size.
 - A skill's real always-on tax is its **frontmatter description**, not its body — the body
   only loads on use. Pricing the whole file overstates it by an order of magnitude.
-- On the setups measured so far, `CLAUDE.md` is a **minority** of the always-on prefix.
-  MCP tool schemas dominate it. The file everyone argues about is rarely the expensive one.
+- On the setups measured so far, `CLAUDE.md` is a **minority** of the always-on prefix —
+  the skill descriptions sitting beside it outweigh it roughly two to one. The file
+  everyone argues about is rarely the expensive one.
+- Most of the prefix is still **unattributed**, and harnessmeter reports it as exactly that.
+  Claude Code's own system prompt and your MCP tool schemas are in there, but their sizes
+  are only knowable at runtime, so no breakdown is printed. Naming a culprit we have not
+  measured would be the same mistake as the tokens-×-turns figure above.
 
 ## How it measures
 
@@ -146,9 +161,9 @@ The primary action is **not deletion — it's demotion.**
 
 Massive win, near-zero risk, mergeable in thirty seconds. Deletion is the rare case.
 
-Every proposal ships with a **receipt**: cost, measured yield, evidence tier, confidence
-interval, the sessions that justify it, and the estimated risk of removal. A market you
-can't audit will never survive code review.
+Every proposal ships with a **receipt**: cost, measured yield, evidence tier, the sessions
+that justify it, and — for a claim that never fired — the 95% upper bound on how often it
+really could have. A market you can't audit will never survive code review.
 
 ## Prevention rules are protected
 

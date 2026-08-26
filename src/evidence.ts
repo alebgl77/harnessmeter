@@ -14,11 +14,50 @@
 
 import type { Claim, ClaimEvidence, Session, Verdict } from './types.ts';
 
-/** Tokens a rule can be checked against: tool names it names, commands it prescribes. */
-const TOOL_VOCAB = [
-  'Read', 'Write', 'Edit', 'Bash', 'Glob', 'Grep', 'Task', 'WebFetch', 'WebSearch',
-  'NotebookEdit', 'TaskCreate', 'TaskUpdate', 'PowerShell', 'ToolSearch',
+/**
+ * Tool names a rule can be checked against.
+ *
+ * This seed exists only so a rule naming a tool the user has never invoked is still
+ * checkable. The working vocabulary is built from the tool names the transcripts actually
+ * contain, so it covers MCP tools, plugin tools and whatever ships next without anyone
+ * editing this list — a hardcoded list goes stale the week after it is written, and a
+ * stale list silently downgrades checkable rules to "no consequence to look for".
+ */
+const TOOL_VOCAB_SEED = [
+  'Read', 'Write', 'Edit', 'Bash', 'Glob', 'Grep', 'WebFetch', 'WebSearch',
+  'NotebookEdit', 'PowerShell', 'ToolSearch',
 ];
+
+/**
+ * Dispatchers that say nothing about WHICH thing was dispatched.
+ *
+ * A rule like "always use the graphify skill" names `Skill`, and every skill invocation in
+ * the corpus is also `Skill` — so the rule comes back load-bearing whenever the user
+ * invoked any skill at all. The same goes for `Task`/`Agent` and subagents. Whether that
+ * particular skill ran is answerable from the attribution fields, which is what the skill
+ * and subagent claim kinds already use; it is not answerable from the tool name, so these
+ * names are not admitted as evidence.
+ */
+const GENERIC_DISPATCH = new Set(['Task', 'Agent', 'Skill']);
+
+type ToolWord = { name: string; re: RegExp };
+
+function escapeRe(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, (m) => '\\' + m);
+}
+
+/** Every tool name seen in the corpus, plus the seed, compiled once per run. */
+function buildVocab(sessions: Session[]): ToolWord[] {
+  const names = new Set<string>(TOOL_VOCAB_SEED);
+  for (const s of sessions) for (const t of s.turns) for (const n of t.tools) names.add(n);
+  return [...names]
+    .filter((n) => n.length >= 3 && n.length <= 120 && !GENERIC_DISPATCH.has(n))
+    .map((name) => ({
+      name,
+      // `_` is a word character, so \b would not separate mcp__x__y from mcp__x__yz.
+      re: new RegExp(`(^|[^A-Za-z0-9_])${escapeRe(name)}([^A-Za-z0-9_]|$)`),
+    }));
+}
 
 /** Commands a rule may prescribe, and the probe that looks for them in a shell trace. */
 const COMMAND_PATTERNS: { re: RegExp; probe: RegExp }[] = [
@@ -42,8 +81,11 @@ function readClaimBody(claim: Claim): string {
  * Does this claim have any mechanically checkable consequence at all?
  * If not, T1 cannot rule on it and the verdict is `unproven`, never `ballast`.
  */
-function checkableSignals(claim: Claim, body: string): { tools: string[]; commands: RegExp[] } {
-  const tools = TOOL_VOCAB.filter((t) => new RegExp(`\\b${t}\\b`).test(body));
+function checkableSignals(
+  body: string,
+  vocab: ToolWord[],
+): { tools: string[]; commands: RegExp[] } {
+  const tools = vocab.filter((t) => t.re.test(body)).map((t) => t.name);
   const commands = COMMAND_PATTERNS.filter((c) => c.re.test(body)).map((c) => c.probe);
   return { tools, commands };
 }
@@ -90,6 +132,19 @@ export function runEvidence({
 
   // A ~/.claude claim is loaded in every session; a project claim only in its own.
   // Judging each against the wrong population is how false ballast is made.
+  const vocab = buildVocab(sessions);
+
+  // A plugin skill is labelled plugin:name and attribution may record either form, so the
+  // bare name is a useful fallback — but only while it belongs to one skill. When a
+  // personal skill and a plugin skill share it, crediting either one's use to the other
+  // manufactures a load-bearing verdict out of somebody else's work.
+  const bareCount = new Map<string, number>();
+  for (const c of claims) {
+    if (c.kind !== 'skill') continue;
+    const n = c.label.replace(/^skill\//, '');
+    const bare = n.slice(n.lastIndexOf(':') + 1);
+    bareCount.set(bare, (bareCount.get(bare) ?? 0) + 1);
+  }
   const userIndex = buildIndex(sessions);
   const projectSessions = currentProject
     ? sessions.filter((s) => s.project === currentProject)
@@ -121,7 +176,9 @@ export function runEvidence({
     switch (claim.kind) {
       case 'skill': {
         const name = claim.label.replace(/^skill\//, '');
-        const fired = skillHits.get(name) ?? 0;
+        const bare = name.slice(name.lastIndexOf(':') + 1);
+        const fired =
+          skillHits.get(name) ?? ((bareCount.get(bare) ?? 0) === 1 ? skillHits.get(bare) ?? 0 : 0);
         ev = t0(claim, fired, total, fired > 0
           ? `attributed in ${fired} of ${total} sessions`
           : `never attributed across ${total} sessions`);
@@ -143,9 +200,23 @@ export function runEvidence({
           : `never used across ${total} sessions — schemas still loaded every turn`);
         break;
       }
+      case 'command': {
+        // A slash-command invocation lives in the user's message, and we read counts and
+        // tool names, never message content. There is no observation to make here, and
+        // manufacturing one would condemn every command a user has ever installed.
+        ev = {
+          claimId: claim.id,
+          tier: 'none',
+          verdict: claim.protected ? 'protected' : 'unproven',
+          firedIn: 0,
+          observedIn: total,
+          note: 'slash-command invocations are not visible in what we read — needs T2',
+        };
+        break;
+      }
       default: {
         // Prose. T1: does it prescribe something we can look for?
-        const { tools, commands } = checkableSignals(claim, body);
+        const { tools, commands } = checkableSignals(body, vocab);
         if (tools.length === 0 && commands.length === 0) {
           ev = {
             claimId: claim.id,
@@ -183,9 +254,13 @@ export function runEvidence({
           verdict: verdictFor(claim, fired, total),
           firedIn: fired,
           observedIn: total,
-          note: fired > 0
-            ? `prescribed behaviour (${checked}) observed in ${fired} of ${total} sessions`
-            : `prescribed behaviour (${checked}) never observed across ${total} sessions`,
+          note: withBound(
+            fired > 0
+              ? `prescribed behaviour (${checked}) observed in ${fired} of ${total} sessions`
+              : `prescribed behaviour (${checked}) never observed across ${total} sessions`,
+            fired,
+            total,
+          ),
         };
       }
     }
@@ -210,14 +285,52 @@ function t0(claim: Claim, fired: number, total: number, note: string): ClaimEvid
     verdict: verdictFor(claim, fired, total),
     firedIn: fired,
     observedIn: total,
-    note,
+    note: withBound(note, fired, total),
   };
+}
+
+/**
+ * One-sided 95% upper bound on the true firing rate of a claim that never fired in `n`
+ * sessions — the rule of three, exactly. If the real rate were any higher, we would have
+ * seen it fire at least once with 95% probability.
+ *
+ * This is the honest answer to "how dead is dead". Never firing in three sessions is
+ * consistent with a rule that fires 63% of the time; calling that ballast is not a
+ * measurement, it is a guess wearing a verdict's clothes.
+ */
+export function zeroHitUpperBound(n: number): number {
+  if (n <= 0) return 1;
+  return 1 - Math.pow(0.05, 1 / n);
+}
+
+/**
+ * Above this bound, "never observed" carries no information and the claim reports
+ * `unproven` instead of `ballast`. It corresponds to five sessions in scope.
+ */
+const BALLAST_MAX_BOUND = 0.5;
+
+/** Strength of a zero-observation result, from the bound rather than a round number. */
+export function confidenceFor(observedIn: number): 'high' | 'medium' | 'low' {
+  const bound = zeroHitUpperBound(observedIn);
+  if (bound <= 0.1) return 'high';
+  if (bound <= 0.25) return 'medium';
+  return 'low';
+}
+
+/** A silence is only as strong as the sample it was measured over. Say how strong. */
+function withBound(note: string, fired: number, total: number): string {
+  if (fired > 0 || total <= 0) return note;
+  const pct = zeroHitUpperBound(total) * 100;
+  return `${note} — rules out a rate above ${pct < 10 ? pct.toFixed(1) : pct.toFixed(0)}% (95%)`;
 }
 
 function verdictFor(claim: Claim, fired: number, total: number): Verdict {
   if (claim.protected) return 'protected';
   if (total === 0) return 'unproven';
-  if (fired === 0) return 'ballast';
+  // Never fired. Whether that means dead depends entirely on how many chances it had.
+  if (fired === 0) {
+    return zeroHitUpperBound(total) <= BALLAST_MAX_BOUND ? 'ballast' : 'unproven';
+  }
   if (fired / total < 0.02) return 'unproven';
   return 'load-bearing';
 }

@@ -45,15 +45,35 @@ export type Session = {
    * as a bound everywhere it surfaces.
    */
   firstTurnPromptTokens: number;
+  /**
+   * How many times the resident prefix was WRITTEN to the cache during this session.
+   *
+   * Measured, not assumed. The obvious model — written once on turn one, read at 0.1x
+   * forever after — is wrong: a cache entry expires with its TTL, and compaction or any
+   * edit to a harness file invalidates it. Each of those forces a full re-write at the
+   * write multiplier. A turn qualifies when its cache read falls below the prefix while it
+   * writes more than half of one. Never below 1: the first turn always writes.
+   */
+  prefixWrites: number;
+  /**
+   * Which TTL this session's cache writes actually used, by token share. It decides
+   * whether a write costs 1.25x or 2x, and assuming the cheaper one understates the bill.
+   */
+  cacheTtl: '5m' | '1h';
 };
 
+/**
+ * What kind of block holds the lease. These are the kinds the scanner actually produces —
+ * hooks are deliberately absent: a hook is a shell command, not a block of context, and it
+ * only occupies the window on the turns where it fires. Pricing one as always-on would
+ * invent a cost.
+ */
 export type ClaimKind =
   | 'prose-section'
   | 'skill'
   | 'subagent'
-  | 'mcp-server'
-  | 'hook'
-  | 'output-style';
+  | 'command'
+  | 'mcp-server';
 
 /**
  * Semantic class of a claim. `prevention` is load-bearing to the whole design:
@@ -125,6 +145,12 @@ export type Proposal = {
     class: ClaimClass;
     protected: boolean;
     confidence: 'high' | 'medium' | 'low';
+    /**
+     * For a claim that never fired: the 95% upper bound on how often it really could,
+     * given the sessions in scope. The receipt has to carry the strength of its own
+     * evidence, or "confidence: medium" is just a word.
+     */
+    boundPct: number;
   };
 };
 
@@ -163,11 +189,27 @@ export type Analysis = {
    */
   residualTokens: number;
   medianTurnsPerSession: number;
+  /**
+   * Median number of times per session the resident prefix was written to the cache.
+   * Every always-on figure in this report is priced against this, not against an assumed
+   * single write. See Session.prefixWrites.
+   */
+  medianPrefixWrites: number;
+  /** The TTL this machine's sessions actually write at, by token share. */
+  cacheTtl: '5m' | '1h';
   models: Record<string, number>;
   claims: Claim[];
   evidence: Map<string, ClaimEvidence>;
   proposals: Proposal[];
   deadSharePct: number;
+  /**
+   * The resolution of this scan: the tightest firing rate a claim that never fired can be
+   * shown to be under, at 95% confidence, given how many sessions were read.
+   *
+   * It is what stops a quiet week from reading as a clean harness. Four sessions cannot
+   * demonstrate anything and the report has to say so rather than print a reassuring zero.
+   */
+  evidenceFloorPct: number;
   /**
    * What this analysis cost. T0/T1 are free; T2 spends the user's own quota via their own
    * agent CLI. Reported so the net-negative claim can be audited rather than asserted.

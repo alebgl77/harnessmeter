@@ -2,15 +2,20 @@
  * Cache-weighted pricing.
  *
  * This file is the reason the project exists. Every "your CLAUDE.md costs you $X" post
- * multiplies tokens by turns and is wrong by roughly 7x, because a stable prefix is not
- * re-charged at full rate on every turn — it is written once and then read at a tenth.
+ * multiplies tokens by turns, which ignores prompt caching and overstates a resident block
+ * by roughly 5x.
  *
  *   write, 5-minute TTL ....... 1.25x input rate
  *   write, 1-hour TTL ......... 2.00x input rate
  *   read ...................... 0.10x input rate
  *
- * Transcripts record the 5m/1h split separately, so we apply the correct multiplier
- * rather than assuming one. Nothing here is estimated.
+ * The obvious correction — written once, then read at a tenth forever — is also wrong, and
+ * in the other direction. A cache entry expires with its TTL, and compaction or an edit to
+ * a harness file invalidates it, so a long session pays the write multiplier repeatedly.
+ * Both the write count and the TTL are therefore measured per session and passed in here.
+ *
+ * Transcripts record the 5m/1h split separately, so we apply the correct multiplier rather
+ * than assuming one. Nothing here is estimated.
  */
 
 import type { TurnUsage } from './types.ts';
@@ -34,6 +39,10 @@ const RATES: Record<string, Rate> = {
   'claude-sonnet-4-6': { in: 3, out: 15 },
   'claude-sonnet-4-5': { in: 3, out: 15 },
   'claude-haiku-4-5': { in: 1, out: 5 },
+  // Claude Code records local, non-API turns under this name. They carry all-zero usage,
+  // so they cost nothing — but left unpriced they land in the "unpriced models" list and
+  // stamp an estimate warning on a figure that is exact.
+  '<synthetic>': { in: 0, out: 0 },
 };
 
 const FALLBACK: Rate = { in: 5, out: 25 };
@@ -70,20 +79,34 @@ export function turnCostUsd(model: string, u: TurnUsage): number {
  * What an always-on block of `tokens` actually costs across a session of `turns`,
  * in effective (cache-weighted) tokens.
  *
- * Written once, then read on every subsequent turn. The naive figure people quote is
- * `tokens * turns`; `naiveRatio` below reports how far off that is.
+ * `writes` is how many times the block was written to the cache — measured per session,
+ * never assumed. The tempting model is one write followed by reads at 0.1x forever, and
+ * it is wrong: a cache entry expires with its TTL, and compaction or an edit to a harness
+ * file invalidates it, so a long session pays the write multiplier many times over. On a
+ * real corpus the median is around twenty writes, not one, and assuming one understates
+ * an always-on block by roughly two thirds.
+ *
+ * The naive figure people quote is `tokens * turns`; `naiveRatio` reports how far off it
+ * still is once the writes are counted properly.
  */
-export function alwaysOnCost(tokens: number, turns: number, ttl: '5m' | '1h' = '5m'): number {
+export function alwaysOnCost(
+  tokens: number,
+  turns: number,
+  ttl: '5m' | '1h' = '5m',
+  writes = 1,
+): number {
   if (turns <= 0) return 0;
+  // At most one write per turn, and never fewer than the one that puts it there.
+  const w = Math.min(Math.max(1, Math.round(writes)), turns);
   const writeMult = ttl === '1h' ? CACHE_WRITE_1H_MULT : CACHE_WRITE_5M_MULT;
-  return tokens * writeMult + tokens * Math.max(0, turns - 1) * CACHE_READ_MULT;
+  return tokens * writeMult * w + tokens * (turns - w) * CACHE_READ_MULT;
 }
 
 /** How badly naive tokens-x-turns overstates the real cost. */
-export function naiveRatio(turns: number, ttl: '5m' | '1h' = '5m'): number {
+export function naiveRatio(turns: number, ttl: '5m' | '1h' = '5m', writes = 1): number {
   if (turns <= 0) return 1;
-  const effective = alwaysOnCost(1, turns, ttl);
-  return (1 * turns) / effective;
+  const effective = alwaysOnCost(1, turns, ttl, writes);
+  return effective > 0 ? turns / effective : 1;
 }
 
 /**

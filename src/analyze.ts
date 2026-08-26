@@ -9,7 +9,7 @@
 import fs from 'node:fs';
 import type { Analysis, Claim, ClaimEvidence, Proposal, Session } from './types.ts';
 import { alwaysOnCost, isKnownModel, turnCostUsd } from './pricing.ts';
-import { runEvidence } from './evidence.ts';
+import { confidenceFor, runEvidence, zeroHitUpperBound } from './evidence.ts';
 import { scanHarness } from './harness.ts';
 import type { T2Result } from './evidence-t2.ts';
 
@@ -88,6 +88,18 @@ export function analyze(
   );
   const medianTurnsPerSession = Math.max(1, median(sessions.map((s) => s.turns.length)));
 
+  // How the cache really behaved, rather than the convenient assumption that a prefix is
+  // written once and read thereafter. Both figures are medians over measured sessions.
+  const medianPrefixWrites = Math.max(1, median(sessions.map((s) => s.prefixWrites)));
+
+  const projectScoped = currentProject
+    ? sessions.filter((s) => s.project === currentProject).length
+    : sessions.length;
+  const hasProjectClaim = claims.some((c) => c.scope === 'project' && c.alwaysOnTokens > 0);
+  const judgedAgainst = hasProjectClaim ? Math.min(sessions.length, projectScoped) : sessions.length;
+  const oneHourSessions = sessions.filter((s) => s.cacheTtl === '1h').length;
+  const cacheTtl: '5m' | '1h' = oneHourSessions * 2 > sessions.length ? '1h' : '5m';
+
   // ---- estimated harness footprint --------------------------------------------------
   const harnessEstTokens = claims.reduce((n, c) => n + c.alwaysOnTokens, 0);
   const residualTokens = Math.max(0, medianPrefixTokens - harnessEstTokens);
@@ -97,9 +109,14 @@ export function analyze(
   let attributableTokens = 0;
   for (const c of claims) {
     if (c.alwaysOnTokens <= 0) continue;
+    const ev = evidence.get(c.id);
+    // A claim nothing can ever rule against belongs in neither half of this fraction.
+    // Slash commands are the case: an invocation lives in the user's message, which we do
+    // not read, so they are permanently unproven. Leaving them in the denominator alone
+    // would quietly shrink the dead share by however many commands the user has installed.
+    if (ev?.tier === 'none' && ev.verdict === 'unproven' && c.kind === 'command') continue;
     attributableTokens += c.alwaysOnTokens;
-    const v = evidence.get(c.id)?.verdict;
-    if (v === 'ballast') deadTokens += c.alwaysOnTokens;
+    if (ev?.verdict === 'ballast') deadTokens += c.alwaysOnTokens;
   }
   const deadSharePct = attributableTokens > 0 ? (deadTokens / attributableTokens) * 100 : 0;
 
@@ -120,7 +137,8 @@ export function analyze(
         savingPerSession: 0, // schema size is runtime-only; reported as part of the residual
         receipt: {
           tier: ev.tier, sessions: ev.observedIn, firedIn: ev.firedIn,
-          class: c.class, protected: false, confidence: ev.observedIn >= 20 ? 'high' : 'medium',
+          class: c.class, protected: false, confidence: confidenceFor(ev.observedIn),
+          boundPct: zeroHitUpperBound(ev.observedIn) * 100,
         },
       });
       continue;
@@ -129,7 +147,12 @@ export function analyze(
     if (c.alwaysOnTokens <= 0) continue;
     if (ev.verdict !== 'ballast') continue;
 
-    const saving = alwaysOnCost(c.alwaysOnTokens, medianTurnsPerSession);
+    const saving = alwaysOnCost(
+      c.alwaysOnTokens,
+      medianTurnsPerSession,
+      cacheTtl,
+      medianPrefixWrites,
+    );
     // A rule the agent ignored is not the same problem as a rule nothing needed.
     // The first wants rewriting, the second wants demoting — don't conflate them.
     const ignored = ev.note.includes('present but not followed');
@@ -141,7 +164,8 @@ export function analyze(
       receipt: {
         tier: ev.tier, sessions: ev.observedIn, firedIn: ev.firedIn,
         class: c.class, protected: false,
-        confidence: ev.tier === 'none' ? 'low' : ev.observedIn >= 20 ? 'high' : 'medium',
+        confidence: ev.tier === 'none' ? 'low' : confidenceFor(ev.observedIn),
+        boundPct: zeroHitUpperBound(ev.observedIn) * 100,
       },
     });
   }
@@ -160,11 +184,17 @@ export function analyze(
     harnessEstTokens,
     residualTokens,
     medianTurnsPerSession,
+    medianPrefixWrites,
+    cacheTtl,
     models,
     claims,
     evidence,
     proposals,
     deadSharePct,
+    // The weakest population any claim was judged against, not the largest. Under --all
+    // a project claim is judged only against its own project's sessions, and quoting the
+    // whole corpus would advertise a resolution those claims do not have.
+    evidenceFloorPct: zeroHitUpperBound(judgedAgainst) * 100,
     cost: {
       tokens: t2?.tokens ?? 0,
       usd: t2?.costUsd ?? 0,

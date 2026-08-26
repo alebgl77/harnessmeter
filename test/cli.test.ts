@@ -14,7 +14,15 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { encodeCwd } from '../src/transcript.ts';
+/**
+ * The encoding rule, transcribed here rather than imported.
+ *
+ * The fixture's cwd is a temp directory, so its encoded name cannot be a literal — but
+ * building it by calling encodeCwd is what let 0.1.5 ship an encoder that matched no real
+ * directory: the code and its oracle shared one assumption. This copy is checked against a
+ * hardcoded real directory name below, and it does not move when src does.
+ */
+const encodeCwdIndependently = (p: string) => p.replace(/[^A-Za-z0-9]/g, '-');
 
 /**
  * Deliberately `src/cli.ts`, not `bin/harnessmeter.js`.
@@ -39,7 +47,7 @@ function fixture(opts: { otherSessions?: number; projectRule?: string; userRule?
   fs.mkdirSync(cwd, { recursive: true });
 
   const projects = path.join(home, 'projects');
-  const mine = path.join(projects, encodeCwd(cwd));
+  const mine = path.join(projects, encodeCwdIndependently(path.resolve(cwd)));
   const other = path.join(projects, 'some-other-project');
   fs.mkdirSync(mine, { recursive: true });
   fs.mkdirSync(other, { recursive: true });

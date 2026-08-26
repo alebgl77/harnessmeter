@@ -8,7 +8,7 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { runEvidence } from '../src/evidence.ts';
+import { confidenceFor, runEvidence, zeroHitUpperBound } from '../src/evidence.ts';
 import { mergeT2, type T2Result } from '../src/evidence-t2.ts';
 import type { Claim, ClaimEvidence, Session, Turn } from '../src/types.ts';
 
@@ -36,6 +36,8 @@ function session(project: string, turns: Turn[], skills: string[] = []): Session
     mcpServersUsed: new Set(),
     subagentsUsed: new Set(),
     firstTurnPromptTokens: 1000,
+    prefixWrites: 1,
+    cacheTtl: '5m',
   };
 }
 
@@ -72,16 +74,60 @@ test('a rule prescribing a command is confirmed by the shell trace', () => {
   assert.equal(ev.firedIn, 1);
 });
 
-test('a rule prescribing a command that never ran is ballast', () => {
+test('a rule prescribing a command that never ran, over enough sessions, is ballast', () => {
   const c = claim({ id: 'cmd-miss' });
+  const ev = runEvidence({
+    claims: [c],
+    sessions: Array.from({ length: 30 }, () => session('p', [turn(['Bash'], ['git status'])])),
+    bodies: new Map([[c.id, 'Always run npm test before committing.']]),
+    currentProject: 'p',
+  }).get(c.id)!;
+  assert.equal(ev.verdict, 'ballast');
+  assert.equal(ev.firedIn, 0);
+  // The verdict must carry the strength of the sample it rests on.
+  assert.match(ev.note, /rules out a rate above/);
+});
+
+test('one quiet session does not condemn a rule', () => {
+  // Never firing in a single session is consistent with a rule that fires 95% of the time.
+  // Reporting that as ballast is not a measurement, and it is the fastest way to make a
+  // user delete something that was working.
+  const c = claim({ id: 'cmd-thin' });
   const ev = runEvidence({
     claims: [c],
     sessions: [session('p', [turn(['Bash'], ['git status'])])],
     bodies: new Map([[c.id, 'Always run npm test before committing.']]),
     currentProject: 'p',
   }).get(c.id)!;
-  assert.equal(ev.verdict, 'ballast');
+  assert.equal(ev.verdict, 'unproven');
   assert.equal(ev.firedIn, 0);
+});
+
+test('the ballast threshold is the rule of three, not a round number', () => {
+  // Four sessions leaves a 53% upper bound; five brings it under half.
+  const c = claim({ id: 'cmd-edge' });
+  const verdictAt = (n: number) =>
+    runEvidence({
+      claims: [c],
+      sessions: Array.from({ length: n }, () => session('p', [turn(['Bash'], ['git status'])])),
+      bodies: new Map([[c.id, 'Always run npm test before committing.']]),
+      currentProject: 'p',
+    }).get(c.id)!.verdict;
+  assert.equal(verdictAt(4), 'unproven');
+  assert.equal(verdictAt(5), 'ballast');
+});
+
+test('the reported bound tightens as the sample grows', () => {
+  const c = claim({ id: 'cmd-bound' });
+  const noteAt = (n: number) =>
+    runEvidence({
+      claims: [c],
+      sessions: Array.from({ length: n }, () => session('p', [turn(['Bash'], ['git status'])])),
+      bodies: new Map([[c.id, 'Always run npm test before committing.']]),
+      currentProject: 'p',
+    }).get(c.id)!.note;
+  assert.match(noteAt(10), /above 26%/);
+  assert.match(noteAt(60), /above 4\.9%/);
 });
 
 test('command rules are not judged on tool names alone', () => {
@@ -96,6 +142,66 @@ test('command rules are not judged on tool names alone', () => {
   }).get(c.id)!;
   assert.notEqual(evidence.verdict, 'ballast');
   assert.match(evidence.note, /command/);
+});
+
+// ── the checkable vocabulary comes from the corpus ──────────────────────────────────
+
+test('a rule naming an MCP tool is checkable', () => {
+  // A hardcoded tool list can never contain mcp__server__tool, so before the vocabulary
+  // was derived from the transcripts every MCP rule reported "no consequence to look
+  // for" and dropped straight to unproven.
+  const c = claim({ id: 'mcp-rule' });
+  const sessions = Array.from({ length: 30 }, () =>
+    session('p', [turn(['mcp__chrome-devtools__navigate_page'])]),
+  );
+  const ev = runEvidence({
+    claims: [c],
+    sessions,
+    bodies: new Map([[c.id, 'Always call mcp__chrome-devtools__navigate_page before asserting.']]),
+    currentProject: 'p',
+  }).get(c.id)!;
+  assert.equal(ev.tier, 'T1');
+  assert.equal(ev.verdict, 'load-bearing');
+});
+
+test('a tool name is matched whole, not as a prefix', () => {
+  const c = claim({ id: 'mcp-prefix' });
+  const sessions = Array.from({ length: 30 }, () => session('p', [turn(['mcp__a__b'])]));
+  const ev = runEvidence({
+    claims: [c],
+    sessions,
+    bodies: new Map([[c.id, 'Always call mcp__a__bcd first.']]),
+    currentProject: 'p',
+  }).get(c.id)!;
+  assert.equal(ev.firedIn, 0);
+});
+
+// ── a command is not observable, and says so ────────────────────────────────────────
+
+test('a slash command reports unproven rather than manufactured ballast', () => {
+  // Invocations live in the user's message, and we read counts and tool names, never
+  // message content. Judging them on silence would condemn every installed command.
+  const c = claim({ id: 'cmd', kind: 'command', label: 'command/deploy' });
+  const ev = runEvidence({
+    claims: [c],
+    sessions: Array.from({ length: 50 }, () => session('p', [turn(['Read'])])),
+    bodies: new Map([[c.id, 'Deploy the service. Always run npm test first.']]),
+    currentProject: 'p',
+  }).get(c.id)!;
+  assert.equal(ev.verdict, 'unproven');
+  assert.match(ev.note, /not visible/);
+});
+
+test('a plugin skill is matched with or without its plugin prefix', () => {
+  const c = claim({ id: 'ps', kind: 'skill', label: 'skill/acme:deploy' });
+  const ev = runEvidence({
+    claims: [c],
+    sessions: [session('p', [turn(['Read'])], ['deploy'])],
+    bodies: new Map(),
+    currentProject: 'p',
+  }).get(c.id)!;
+  assert.equal(ev.firedIn, 1);
+  assert.equal(ev.verdict, 'load-bearing');
 });
 
 // ── scope: a claim is only judged where it was loaded ────────────────────────────────
@@ -212,4 +318,108 @@ test('T2 cannot override a protected claim', () => {
   const ev = baseEvidence();
   mergeT2(ev, t2With('violated'), [claim({ protected: true })]);
   assert.equal(ev.get('c1')!.verdict, 'unproven');
+});
+
+// ── a dispatcher is not evidence about what it dispatched ───────────────────────────
+
+test('a rule naming a specific skill is not confirmed by the generic Skill tool', () => {
+  // "always use the graphify skill" names Skill; so does every other skill invocation in
+  // the corpus. Admitting it would report the rule load-bearing whenever the user invoked
+  // any skill at all.
+  const c = claim({ id: 'skill-rule' });
+  const ev = runEvidence({
+    claims: [c],
+    sessions: Array.from({ length: 30 }, () => session('p', [turn(['Skill'])])),
+    bodies: new Map([[c.id, 'When the user asks about the codebase, invoke the Skill graphify.']]),
+    currentProject: 'p',
+  }).get(c.id)!;
+  assert.equal(ev.tier, 'none');
+  assert.match(ev.note, /no mechanically checkable consequence/);
+});
+
+test('Task and Agent are excluded for the same reason', () => {
+  for (const tool of ['Task', 'Agent']) {
+    const c = claim({ id: 'dispatch-' + tool });
+    const ev = runEvidence({
+      claims: [c],
+      sessions: Array.from({ length: 30 }, () => session('p', [turn([tool])])),
+      bodies: new Map([[c.id, 'Dispatch the scout agent with the ' + tool + ' tool first.']]),
+      currentProject: 'p',
+    }).get(c.id)!;
+    assert.equal(ev.tier, 'none', tool + ' should not be a checkable signal');
+  }
+});
+
+test('a specific tool in the same rule is still checkable', () => {
+  const c = claim({ id: 'mixed' });
+  const ev = runEvidence({
+    claims: [c],
+    sessions: Array.from({ length: 30 }, () => session('p', [turn(['Grep'])])),
+    bodies: new Map([[c.id, 'Dispatch with the Task tool only after a Grep.']]),
+    currentProject: 'p',
+  }).get(c.id)!;
+  assert.equal(ev.tier, 'T1');
+  assert.equal(ev.verdict, 'load-bearing');
+});
+
+test('an ambiguous bare skill name is not credited to either skill', () => {
+  // A personal ~/.claude/skills/review and a plugin skill acme:review both answer to
+  // "review". Attribution recorded one of them; crediting both is manufacturing evidence.
+  const mine = claim({ id: 's1', kind: 'skill', label: 'skill/review' });
+  const theirs = claim({ id: 's2', kind: 'skill', label: 'skill/acme:review' });
+  const ev = runEvidence({
+    claims: [mine, theirs],
+    sessions: [session('p', [turn(['Read'])], ['review'])],
+    bodies: new Map(),
+    currentProject: 'p',
+  });
+  assert.equal(ev.get('s1')!.firedIn, 1, 'the exact label still matches');
+  assert.equal(ev.get('s2')!.firedIn, 0, 'the ambiguous bare name does not');
+});
+
+test('an unambiguous bare name is still credited', () => {
+  const only = claim({ id: 's3', kind: 'skill', label: 'skill/acme:deploy' });
+  const ev = runEvidence({
+    claims: [only],
+    sessions: [session('p', [turn(['Read'])], ['deploy'])],
+    bodies: new Map(),
+    currentProject: 'p',
+  }).get('s3')!;
+  assert.equal(ev.firedIn, 1);
+});
+
+// ── the numbers stamped on a receipt ────────────────────────────────────────────────
+
+test('the zero-hit bound is the rule of three', () => {
+  // 1 - 0.05^(1/n): the rate above which we would have seen it fire, with 95% probability.
+  assert.ok(Math.abs(zeroHitUpperBound(1) - 0.95) < 1e-9);
+  assert.ok(Math.abs(zeroHitUpperBound(3) - 0.631597) < 1e-5);
+  assert.ok(Math.abs(zeroHitUpperBound(29) - 0.098145) < 1e-5);
+  assert.equal(zeroHitUpperBound(0), 1);
+  // Strictly tightening, never flat — a constant would pass a looser assertion.
+  for (let n = 1; n < 40; n++) assert.ok(zeroHitUpperBound(n + 1) < zeroHitUpperBound(n));
+});
+
+test('confidence follows the bound, and is not a constant', () => {
+  assert.equal(confidenceFor(40), 'high');
+  assert.equal(confidenceFor(29), 'high');
+  assert.equal(confidenceFor(28), 'medium');
+  assert.equal(confidenceFor(11), 'medium');
+  assert.equal(confidenceFor(10), 'low');
+  assert.equal(confidenceFor(1), 'low');
+  assert.equal(new Set([confidenceFor(40), confidenceFor(20), confidenceFor(2)]).size, 3);
+});
+
+test('a bound is printed only for a claim that never fired', () => {
+  // The rule of three answers "how dead is dead". Printing it beside a claim that DID fire
+  // would attach a zero-observation bound to a non-zero observation.
+  const c = claim({ id: 'fired' });
+  const ev = runEvidence({
+    claims: [c],
+    sessions: Array.from({ length: 30 }, () => session('p', [turn(['Bash'], ['npm test'])])),
+    bodies: new Map([[c.id, 'Always run npm test before committing.']]),
+    currentProject: 'p',
+  }).get(c.id)!;
+  assert.ok(ev.firedIn > 0);
+  assert.doesNotMatch(ev.note, /rules out a rate above/);
 });

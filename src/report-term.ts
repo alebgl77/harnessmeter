@@ -51,7 +51,7 @@ export function renderTerminal(a: Analysis): string {
   p();
 
   // ---- prefix ------------------------------------------------------------------
-  const ratio = naiveRatio(a.medianTurnsPerSession);
+  const ratio = naiveRatio(a.medianTurnsPerSession, a.cacheTtl, a.medianPrefixWrites);
   p(`  ${amber('ALWAYS-ON PREFIX')}  ${dim('first-turn prompt — an upper bound')}`);
   p();
   p(`    median first turn     ${n(a.medianPrefixTokens).padStart(12)} tok`);
@@ -62,7 +62,19 @@ export function renderTerminal(a: Analysis): string {
   p(
     `    ${dim(`at ${a.medianTurnsPerSession} turns/session, prompt caching makes the prefix`)}`,
   );
-  p(`    ${dim(`${ratio.toFixed(1)}x cheaper than tokens x turns would suggest.`)}`);
+  // Once a session writes its prefix often enough, caching stops being a discount. Rare,
+  // but printing "0.9x cheaper" would be nonsense rather than a small number.
+  p(
+    `    ${dim(
+      ratio >= 1
+        ? `${ratio.toFixed(1)}x cheaper than tokens x turns would suggest.`
+        : `${(1 / ratio).toFixed(1)}x MORE than tokens x turns would suggest.`,
+    )}`,
+  );
+  p(
+    `    ${dim(`measured: ${a.medianPrefixWrites} prefix write${a.medianPrefixWrites === 1 ? '' : 's'} per session at the ${a.cacheTtl} rate,`)}`,
+  );
+  p(`    ${dim('not one — cache entries expire and compaction rebuilds the prompt.')}`);
   p();
 
   // ---- dead share --------------------------------------------------------------
@@ -80,6 +92,21 @@ export function renderTerminal(a: Analysis): string {
     `    ${dim(`scope: those claims are ${attributedPct.toFixed(0)}% of your ${n(a.medianPrefixTokens)}-tok prefix.`)}`,
   );
   p(`    ${dim(`the other ${n(a.residualTokens)} tok is unattributed and not judged here.`)}`);
+  // A quiet corpus and a clean harness produce the same zero. Say which one this is.
+  const floor = a.evidenceFloorPct;
+  p(
+    `    ${dim(`resolution: ${a.sessionCount} session${a.sessionCount === 1 ? '' : 's'} read — never firing only`)}`,
+  );
+  p(`    ${dim(`rules out a load rate above ${floor < 10 ? floor.toFixed(1) : floor.toFixed(0)}%.`)}`);
+  if (floor > 50) {
+    // A T2 run reaches its verdicts by reading the trajectory, not by counting silences,
+    // so a thin corpus does not disqualify them. Say which one this sentence is about.
+    p(
+      `    ${amber('too thin to condemn anything at T0/T1')} ${dim(
+        a.cost.tier === 'T0/T1/T2' ? '— the T2 verdicts above stand on their own.' : '— rerun with --all, or come back later.',
+      )}`,
+    );
+  }
   p();
 
   // ---- ledger ------------------------------------------------------------------
@@ -116,8 +143,15 @@ export function renderTerminal(a: Analysis): string {
       const verb = pr.action === 'demote' ? 'demote to on-demand' : pr.action === 'evict' ? 'remove' : 'investigate';
       p(`    ${bold(pr.label.slice(0, 56))}`);
       p(`      ${green('→')} ${verb}${pr.savingPerSession > 0 ? green(`  saves ~${n(pr.savingPerSession)} eff tok/session`) : ''}`);
+      const bound = pr.receipt.boundPct;
       p(
-        `      ${dim(`receipt: ${pr.receipt.tier} · ${pr.receipt.firedIn}/${pr.receipt.sessions} sessions · class ${pr.receipt.class} · confidence ${pr.receipt.confidence}`)}`,
+        `      ${dim(
+          `receipt: ${pr.receipt.tier} · ${pr.receipt.firedIn}/${pr.receipt.sessions} sessions · class ${pr.receipt.class} · ` +
+            `confidence ${pr.receipt.confidence}` +
+            (pr.receipt.firedIn === 0 && bound > 0
+              ? ` · loads <${bound < 10 ? bound.toFixed(1) : bound.toFixed(0)}% of the time (95%)`
+              : ``),
+        )}`,
       );
       p();
     }
