@@ -16,6 +16,52 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **Patch generator.** Emit the demotion as a reviewable diff rather than a description.
 - **Readers for other harnesses.** Codex and Antigravity transcript formats.
 
+## [0.2.1] — 2026-08-26
+
+Closes the findings the 0.2.0 audit raised but did not act on. No change to the cache
+arithmetic or the billing fix; this is about what a verdict is allowed to rest on.
+
+### Changed — a claim is judged on work its own text could have shaped
+
+- **Sessions that finished before a claim's file was last written are no longer counted
+  against it.** A rule rewritten yesterday was not in force last month, so last month's
+  sessions were never chances for it to fire — counting them turned an edit into evidence
+  of uselessness. On the corpus this was measured against, 28 of 86 claims had older
+  sessions set aside.
+- The verdict says so: *"never observed across 6 sessions — rules out a rate above 39%;
+  30 older sessions not counted"*. A claim whose file postdates every session read reports
+  `unproven` and names the file, rather than reporting a confident nothing.
+- Modification time is a coarse clock — it moves for a change anywhere in the file, and a
+  fresh clone resets it. It is used because it errs the safe way: it can only shrink the
+  evidence a claim is judged on, never invent any. A session with no timestamp is never
+  excluded, because an unknown date is not evidence of an old one.
+
+### Changed — the resolution notice quotes the sample it was computed over
+
+Under `--all` the floor is computed over the sessions that judge *project* claims, which is
+a smaller number than the scan read. The reports printed the larger one beside it, which
+advertised a precision most of the ledger does not have. They now print both: *"4 of 32
+sessions judge this project"*.
+
+### Added
+
+- **An enabled plugin's MCP servers are claims.** A plugin can contribute a server and
+  nothing else — the `github` plugin does exactly that — and its tool schemas are resident
+  on every turn. Deliberately not qualified by plugin name: a transcript records
+  `mcp__github__*` and cannot say whether the server came from a plugin or from the
+  project's own `.mcp.json`, so two claims would mean two ids and one of them permanently
+  unmatchable.
+- The rare-fire threshold that separates `load-bearing` from `unproven` is named,
+  explained and pinned from both sides. It was reachable but untested, and could have
+  drifted by a factor of twenty-five without a single test noticing.
+
+### Added — tests
+
+- 166 → **173**: claim age from four directions (older sessions excluded, a file newer than
+  every session, an undated session, an unknown edit time), the rare-fire threshold either
+  side of its boundary, the scoped resolution line, and a plugin whose only contribution is
+  an MCP server.
+
 ## [0.2.0] — 2026-08-26
 
 An audit of the measurement itself, and it found the instrument out of true. **Every number
@@ -445,7 +491,8 @@ Initial implementation.
 - **The primary action is demotion, not deletion.** Moving an always-on block to on-demand
   is a large win at near-zero risk. Deletion is the rare case.
 
-[Unreleased]: https://github.com/alebgl77/harnessmeter/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/alebgl77/harnessmeter/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/alebgl77/harnessmeter/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/alebgl77/harnessmeter/compare/v0.1.4...v0.2.0
 [0.1.5]: https://github.com/alebgl77/harnessmeter/compare/v0.1.4...v0.2.0
 [0.1.4]: https://github.com/alebgl77/harnessmeter/compare/v0.1.3...v0.1.4

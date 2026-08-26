@@ -23,6 +23,29 @@ export function estTokens(chars: number): number {
 }
 
 /**
+ * When a harness file was last written. Cached, because one file holds many claims and a
+ * stat per claim is a stat per section of every CLAUDE.md on the machine.
+ *
+ * Modification time is a coarse instrument — it moves for an edit anywhere in the file,
+ * and a fresh clone resets it — but it is available without git and it errs in the safe
+ * direction: it can only shrink the evidence a claim is judged on, never inflate it.
+ */
+const mtimeCache = new Map<string, number>();
+
+export function modifiedMs(file: string): number {
+  const hit = mtimeCache.get(file);
+  if (hit !== undefined) return hit;
+  let ms = 0;
+  try {
+    ms = fs.statSync(file).mtimeMs;
+  } catch {
+    /* unreadable — treated as unknown, which excludes nothing */
+  }
+  mtimeCache.set(file, ms);
+  return ms;
+}
+
+/**
  * Prevention detection is surgical by design.
  *
  * A prevention rule is protected from eviction because its yield is inverted — it looks
@@ -93,7 +116,7 @@ function mkClaim(
     class: cls,
     classInferred: inferred,
     loading,
-    source: { file, startLine, endLine },
+    source: { file, startLine, endLine, modifiedMs: modifiedMs(file) },
     chars: body.length,
     estTokens: estTokens(body.length),
     alwaysOnTokens:
@@ -418,7 +441,9 @@ export function extractPluginClaims(home: string, cwd?: string): Claim[] {
       // server's, but the server itself has to appear in the ledger.
       const servers = readJson(path.join(root, '.mcp.json'))?.mcpServers;
       if (servers && typeof servers === 'object') {
-        for (const server of Object.keys(servers)) claims.push(mcpClaim(server));
+        for (const server of Object.keys(servers)) {
+          claims.push(mcpClaim(server, path.join(root, '.mcp.json')));
+        }
       }
     }
   }
@@ -444,11 +469,11 @@ export function extractMcpClaims(cwd: string): Claim[] {
   const projEntry = globalCfg?.projects?.[cwd] ?? globalCfg?.projects?.[path.resolve(cwd)];
   push(projEntry?.mcpServers);
 
-  return [...servers].map(mcpClaim);
+  return [...servers].map((name) => mcpClaim(name));
 }
 
 /** One MCP server, from wherever it was declared. Size is runtime-only, so it is not faked. */
-function mcpClaim(name: string): Claim {
+function mcpClaim(name: string, file = '.mcp.json'): Claim {
   return {
     id: `mcp:${name}`,
     label: `mcp/${name}`,
@@ -457,7 +482,7 @@ function mcpClaim(name: string): Claim {
     class: 'knowledge' as ClaimClass,
     classInferred: true,
     loading: 'always-on' as Loading,
-    source: { file: '.mcp.json', startLine: 0, endLine: 0 },
+    source: { file, startLine: 0, endLine: 0, modifiedMs: 0 },
     chars: 0,
     estTokens: 0, // unknowable statically — reported as part of the residual
     alwaysOnTokens: 0,

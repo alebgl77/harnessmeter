@@ -195,6 +195,7 @@ export function analyze(
     // a project claim is judged only against its own project's sessions, and quoting the
     // whole corpus would advertise a resolution those claims do not have.
     evidenceFloorPct: zeroHitUpperBound(judgedAgainst) * 100,
+    evidenceFloorSessions: judgedAgainst,
     cost: {
       tokens: t2?.tokens ?? 0,
       usd: t2?.costUsd ?? 0,

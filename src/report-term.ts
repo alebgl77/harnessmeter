@@ -94,8 +94,16 @@ export function renderTerminal(a: Analysis): string {
   p(`    ${dim(`the other ${n(a.residualTokens)} tok is unattributed and not judged here.`)}`);
   // A quiet corpus and a clean harness produce the same zero. Say which one this is.
   const floor = a.evidenceFloorPct;
+  // The floor is computed over the weakest population any claim was judged against, so
+  // printing the size of the whole scan beside it would advertise a resolution most of
+  // the ledger does not have.
+  const floorN = a.evidenceFloorSessions;
   p(
-    `    ${dim(`resolution: ${a.sessionCount} session${a.sessionCount === 1 ? '' : 's'} read — never firing only`)}`,
+    `    ${dim(
+      floorN === a.sessionCount
+        ? `resolution: ${floorN} session${floorN === 1 ? '' : 's'} read — never firing only`
+        : `resolution: ${floorN} of ${a.sessionCount} sessions judge this project — never firing only`,
+    )}`,
   );
   p(`    ${dim(`rules out a load rate above ${floor < 10 ? floor.toFixed(1) : floor.toFixed(0)}%.`)}`);
   if (floor > 50) {

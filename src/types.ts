@@ -109,7 +109,20 @@ export type Claim = {
   /** True when the class was inferred rather than declared. Never applied silently. */
   classInferred: boolean;
   loading: Loading;
-  source: { file: string; startLine: number; endLine: number };
+  source: {
+    file: string;
+    startLine: number;
+    endLine: number;
+    /**
+     * When the file this claim lives in was last written, as epoch milliseconds, or 0 if
+     * that could not be read.
+     *
+     * A session that ran before this was judging different text. Counting it as a chance
+     * the claim had to fire is how a rule written yesterday gets condemned on evidence
+     * from last month.
+     */
+    modifiedMs: number;
+  };
   chars: number;
   /** Calibrated estimate of the whole block. Session-level costs are exact; these are not. */
   estTokens: number;
@@ -210,6 +223,14 @@ export type Analysis = {
    * demonstrate anything and the report has to say so rather than print a reassuring zero.
    */
   evidenceFloorPct: number;
+  /**
+   * How many sessions that floor was computed over.
+   *
+   * Under `--all` this is smaller than `sessionCount`: a project's claims are only judged
+   * against that project's sessions, so quoting the whole corpus would advertise a
+   * resolution the scan does not have for most of what it reports.
+   */
+  evidenceFloorSessions: number;
   /**
    * What this analysis cost. T0/T1 are free; T2 spends the user's own quota via their own
    * agent CLI. Reported so the net-negative claim can be audited rather than asserted.

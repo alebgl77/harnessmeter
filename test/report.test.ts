@@ -25,7 +25,7 @@ function claim(over: Partial<Claim> = {}): Claim {
     class: 'workflow',
     classInferred: true,
     loading: 'always-on',
-    source: { file: 'CLAUDE.md', startLine: 1, endLine: 3 },
+    source: { file: 'CLAUDE.md', startLine: 1, endLine: 3, modifiedMs: 0 },
     chars: 100,
     estTokens: 26,
     alwaysOnTokens: 26,
@@ -54,6 +54,7 @@ function analysis(over: Partial<Analysis> = {}): Analysis {
     medianPrefixWrites: 4,
     cacheTtl: '1h',
     evidenceFloorPct: 28,
+    evidenceFloorSessions: 9,
     models: { 'claude-opus-5': 90 },
     claims: [c],
     evidence,
@@ -180,10 +181,23 @@ test('identifiers respect their length cap', () => {
 // ── a quiet corpus and a clean harness must not print the same thing ────────────────
 
 test('the terminal report states the resolution of the scan', () => {
-  const out = renderTerminal(analysis({ sessionCount: 32, evidenceFloorPct: 8.9 }));
+  const out = renderTerminal(
+    analysis({ sessionCount: 32, evidenceFloorSessions: 32, evidenceFloorPct: 8.9 }),
+  );
   assert.match(out, /resolution: 32 sessions read/);
   assert.match(out, /above 8.9%/);
   assert.doesNotMatch(out, /too thin to condemn/);
+});
+
+test('the resolution names the population it was computed over, not the whole scan', () => {
+  // Under --all a project's claims are judged against far fewer sessions than were read.
+  // Printing the larger number beside the bound advertises a precision most of the ledger
+  // does not have.
+  const out = renderTerminal(
+    analysis({ sessionCount: 32, evidenceFloorSessions: 4, evidenceFloorPct: 52.7 }),
+  );
+  assert.match(out, /4 of 32 sessions judge this project/);
+  assert.doesNotMatch(out, /32 sessions read/);
 });
 
 test('a thin sample is called thin instead of clean', () => {

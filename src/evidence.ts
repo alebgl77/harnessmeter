@@ -105,10 +105,26 @@ export type EvidenceInput = {
 
 type Index = {
   sessions: Session[];
+  /** How many sessions were in scope before the claim's age narrowed it. */
+  pool: number;
   skillHits: Map<string, number>;
   mcpHits: Map<string, number>;
   agentHits: Map<string, number>;
 };
+
+/**
+ * When a session last produced a turn, as epoch milliseconds, or 0 if no turn carried a
+ * timestamp. Zero is never excluded: an unknown date is not evidence of an old one.
+ */
+function sessionEndedMs(s: Session): number {
+  for (let i = s.turns.length - 1; i >= 0; i--) {
+    const t = s.turns[i].timestamp;
+    if (!t) continue;
+    const ms = Date.parse(t);
+    if (Number.isFinite(ms)) return ms;
+  }
+  return 0;
+}
 
 function buildIndex(sessions: Session[]): Index {
   const skillHits = new Map<string, number>();
@@ -119,7 +135,7 @@ function buildIndex(sessions: Session[]): Index {
     for (const k of s.mcpServersUsed) mcpHits.set(k, (mcpHits.get(k) ?? 0) + 1);
     for (const k of s.subagentsUsed) agentHits.set(k, (agentHits.get(k) ?? 0) + 1);
   }
-  return { sessions, skillHits, mcpHits, agentHits };
+  return { sessions, pool: sessions.length, skillHits, mcpHits, agentHits };
 }
 
 export function runEvidence({
@@ -145,12 +161,46 @@ export function runEvidence({
     const bare = n.slice(n.lastIndexOf(':') + 1);
     bareCount.set(bare, (bareCount.get(bare) ?? 0) + 1);
   }
-  const userIndex = buildIndex(sessions);
   const projectSessions = currentProject
     ? sessions.filter((s) => s.project === currentProject)
     : sessions;
-  const projectIndex = buildIndex(projectSessions);
-  const indexFor = (claim: Claim): Index => (claim.scope === 'user' ? userIndex : projectIndex);
+
+  // When each session last produced a turn, so a claim is never judged on work that
+  // finished before its text existed.
+  const endedAt = new Map<Session, number>();
+  for (const s of sessions) endedAt.set(s, sessionEndedMs(s));
+
+  /**
+   * The sessions that could actually have exercised THIS text.
+   *
+   * A rule rewritten yesterday was not in force last month, so last month's sessions were
+   * never chances for it to fire — counting them turns an edit into evidence of
+   * uselessness. Modification time is a coarse clock: it moves for a change anywhere in
+   * the file, and a fresh clone resets it. It errs the safe way, though — it can only
+   * shrink the evidence a claim is judged on, never invent any.
+   *
+   * One index per (scope, age); claims from one file share both.
+   */
+  const cache = new Map<string, Index>();
+  const indexFor = (claim: Claim): Index => {
+    const pool = claim.scope === 'user' ? sessions : projectSessions;
+    const since = claim.source.modifiedMs;
+    const key = `${claim.scope}:${since}`;
+    let idx = cache.get(key);
+    if (!idx) {
+      const kept =
+        since > 0
+          ? pool.filter((s) => {
+              const ended = endedAt.get(s) ?? 0;
+              return ended === 0 || ended >= since;
+            })
+          : pool;
+      idx = buildIndex(kept);
+      idx.pool = pool.length;
+      cache.set(key, idx);
+    }
+    return idx;
+  };
 
   for (const claim of claims) {
     const body = bodies.get(claim.id) ?? readClaimBody(claim);
@@ -160,13 +210,16 @@ export function runEvidence({
 
     // Nothing to testify. Silence is not evidence of uselessness.
     if (total === 0) {
+      const named = claim.source.file.split(/[\\\\/]/).pop();
       out.set(claim.id, {
         claimId: claim.id,
         tier: 'none',
         verdict: claim.protected ? 'protected' : 'unproven',
         firedIn: 0,
         observedIn: 0,
-        note: 'no sessions in scope for this claim — nothing observed either way',
+        note: idx.pool
+          ? `every session in scope predates the last edit to ${named} — nothing observed of this text`
+          : 'no sessions in scope for this claim — nothing observed either way',
       });
       continue;
     }
@@ -179,7 +232,7 @@ export function runEvidence({
         const bare = name.slice(name.lastIndexOf(':') + 1);
         const fired =
           skillHits.get(name) ?? ((bareCount.get(bare) ?? 0) === 1 ? skillHits.get(bare) ?? 0 : 0);
-        ev = t0(claim, fired, total, fired > 0
+        ev = t0(claim, idx, fired, total, fired > 0
           ? `attributed in ${fired} of ${total} sessions`
           : `never attributed across ${total} sessions`);
         break;
@@ -187,7 +240,7 @@ export function runEvidence({
       case 'subagent': {
         const name = claim.label.replace(/^agent\//, '');
         const fired = agentHits.get(name) ?? 0;
-        ev = t0(claim, fired, total, fired > 0
+        ev = t0(claim, idx, fired, total, fired > 0
           ? `dispatched in ${fired} of ${total} sessions`
           : `never dispatched across ${total} sessions`);
         break;
@@ -195,7 +248,7 @@ export function runEvidence({
       case 'mcp-server': {
         const name = claim.label.replace(/^mcp\//, '');
         const fired = mcpHits.get(name) ?? matchLoose(mcpHits, name);
-        ev = t0(claim, fired, total, fired > 0
+        ev = t0(claim, idx, fired, total, fired > 0
           ? `used in ${fired} of ${total} sessions`
           : `never used across ${total} sessions — schemas still loaded every turn`);
         break;
@@ -254,12 +307,15 @@ export function runEvidence({
           verdict: verdictFor(claim, fired, total),
           firedIn: fired,
           observedIn: total,
-          note: withBound(
-            fired > 0
-              ? `prescribed behaviour (${checked}) observed in ${fired} of ${total} sessions`
-              : `prescribed behaviour (${checked}) never observed across ${total} sessions`,
-            fired,
-            total,
+          note: withStale(
+            withBound(
+              fired > 0
+                ? `prescribed behaviour (${checked}) observed in ${fired} of ${total} sessions`
+                : `prescribed behaviour (${checked}) never observed across ${total} sessions`,
+              fired,
+              total,
+            ),
+            idx,
           ),
         };
       }
@@ -278,15 +334,21 @@ function matchLoose(map: Map<string, number>, name: string): number {
   return 0;
 }
 
-function t0(claim: Claim, fired: number, total: number, note: string): ClaimEvidence {
+function t0(claim: Claim, idx: Index, fired: number, total: number, note: string): ClaimEvidence {
   return {
     claimId: claim.id,
     tier: 'T0',
     verdict: verdictFor(claim, fired, total),
     firedIn: fired,
     observedIn: total,
-    note: withBound(note, fired, total),
+    note: withStale(withBound(note, fired, total), idx),
   };
+}
+
+/** Sessions set aside because they finished before the claim's file was last written. */
+function withStale(note: string, idx: Index): string {
+  const stale = idx.pool - idx.sessions.length;
+  return stale > 0 ? `${note}; ${stale} older session${stale === 1 ? '' : 's'} not counted` : note;
 }
 
 /**
@@ -308,6 +370,16 @@ export function zeroHitUpperBound(n: number): number {
  * `unproven` instead of `ballast`. It corresponds to five sessions in scope.
  */
 const BALLAST_MAX_BOUND = 0.5;
+
+/**
+ * A firing rate at or below this is treated as noise rather than evidence of use.
+ *
+ * It is a judgement, not a derivation: two percent is roughly "once in fifty sessions",
+ * which is where a hit stops looking like a habit. It matters that it is pinned — the
+ * verdict flips on it, and an untested threshold can drift by a factor of twenty-five
+ * without a single test noticing.
+ */
+const RARE_FIRE_RATE = 0.02;
 
 /** Strength of a zero-observation result, from the bound rather than a round number. */
 export function confidenceFor(observedIn: number): 'high' | 'medium' | 'low' {
@@ -331,6 +403,10 @@ function verdictFor(claim: Claim, fired: number, total: number): Verdict {
   if (fired === 0) {
     return zeroHitUpperBound(total) <= BALLAST_MAX_BOUND ? 'ballast' : 'unproven';
   }
-  if (fired / total < 0.02) return 'unproven';
+  // Firing somewhere is not the same as being load-bearing. One hit in three hundred
+  // sessions is indistinguishable from a coincidence, and calling it live would protect
+  // every rule that was ever accidentally satisfied. Below this rate the honest answer is
+  // that we cannot tell, which is what T2 is for.
+  if (fired / total < RARE_FIRE_RATE) return 'unproven';
   return 'load-bearing';
 }

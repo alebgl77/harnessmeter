@@ -468,3 +468,29 @@ test('every surface scanHarness wires up produces a claim', () => {
     else process.env.CLAUDE_HOME = prev;
   }
 });
+
+test('a plugin that contributes only an MCP server is still a claim', () => {
+  // The github plugin on the machine this was written against does exactly that: no
+  // skills, no agents, no commands, and tool schemas resident on every turn.
+  const home = tmp('hm-plug-mcp-');
+  const installed = path.join(home, 'plugins', 'cache', 'official', 'gh', 'unknown');
+  fs.mkdirSync(installed, { recursive: true });
+  fs.writeFileSync(
+    path.join(installed, '.mcp.json'),
+    JSON.stringify({ mcpServers: { github: { command: 'gh-mcp' } } }),
+    'utf8',
+  );
+  fs.writeFileSync(
+    path.join(home, 'plugins', 'installed_plugins.json'),
+    JSON.stringify({ plugins: { 'gh@official': [{ installPath: installed }] } }),
+    'utf8',
+  );
+  const claims = extractPluginClaims(home);
+  assert.equal(claims.length, 1);
+  assert.equal(claims[0].kind, 'mcp-server');
+  // Deliberately not qualified by plugin: a transcript records mcp__github__*, which
+  // cannot say whether the server came from a plugin or from the project's own .mcp.json.
+  // Two claims would be two ids and one of them permanently unmatchable.
+  assert.equal(claims[0].label, 'mcp/github');
+  assert.match(claims[0].source.file, /.mcp.json$/);
+});

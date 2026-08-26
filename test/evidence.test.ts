@@ -12,7 +12,7 @@ import { confidenceFor, runEvidence, zeroHitUpperBound } from '../src/evidence.t
 import { mergeT2, type T2Result } from '../src/evidence-t2.ts';
 import type { Claim, ClaimEvidence, Session, Turn } from '../src/types.ts';
 
-function turn(tools: string[] = [], commands: string[] = []): Turn {
+function turn(tools: string[] = [], commands: string[] = [], timestamp?: string): Turn {
   return {
     model: 'claude-opus-5',
     usage: {
@@ -24,6 +24,7 @@ function turn(tools: string[] = [], commands: string[] = []): Turn {
     },
     tools,
     commands,
+    timestamp,
   };
 }
 
@@ -50,7 +51,7 @@ function claim(over: Partial<Claim> = {}): Claim {
     class: 'workflow',
     classInferred: true,
     loading: 'always-on',
-    source: { file: 'CLAUDE.md', startLine: 1, endLine: 3 },
+    source: { file: 'CLAUDE.md', startLine: 1, endLine: 3, modifiedMs: 0 },
     chars: 100,
     estTokens: 26,
     alwaysOnTokens: 26,
@@ -422,4 +423,79 @@ test('a bound is printed only for a claim that never fired', () => {
   }).get(c.id)!;
   assert.ok(ev.firedIn > 0);
   assert.doesNotMatch(ev.note, /rules out a rate above/);
+});
+
+// ── a claim is judged on the work its own text could have shaped ────────────────────
+
+const AT = (iso: string) => Date.parse(iso);
+
+test('sessions that finished before the claim was last edited are not counted', () => {
+  // A rule rewritten today was not in force last month. Counting last month's sessions as
+  // chances it had to fire turns an edit into evidence of uselessness.
+  const c = claim({ id: 'aged', source: { file: 'CLAUDE.md', startLine: 1, endLine: 3, modifiedMs: AT('2026-06-01T00:00:00Z') } });
+  const old = Array.from({ length: 30 }, () => session('p', [turn(['Read'], [], '2026-01-15T10:00:00Z')]));
+  const recent = Array.from({ length: 6 }, () => session('p', [turn(['Read'], [], '2026-07-01T10:00:00Z')]));
+  const ev = runEvidence({
+    claims: [c],
+    sessions: [...old, ...recent],
+    bodies: new Map([[c.id, 'Always run npm test before committing.']]),
+    currentProject: 'p',
+  }).get(c.id)!;
+  assert.equal(ev.observedIn, 6, 'only the sessions that could have seen this text');
+  assert.match(ev.note, /30 older sessions not counted/);
+});
+
+test('a claim edited after every session reports unproven, not dead', () => {
+  const c = claim({ id: 'fresh', source: { file: 'CLAUDE.md', startLine: 1, endLine: 3, modifiedMs: AT('2027-01-01T00:00:00Z') } });
+  const ev = runEvidence({
+    claims: [c],
+    sessions: Array.from({ length: 40 }, () => session('p', [turn(['Read'], [], '2026-05-01T10:00:00Z')])),
+    bodies: new Map([[c.id, 'Always run npm test before committing.']]),
+    currentProject: 'p',
+  }).get(c.id)!;
+  assert.equal(ev.verdict, 'unproven');
+  assert.match(ev.note, /predates the last edit/);
+});
+
+test('a session with no timestamp is never excluded by age', () => {
+  // An unknown date is not evidence of an old one.
+  const c = claim({ id: 'undated', source: { file: 'CLAUDE.md', startLine: 1, endLine: 3, modifiedMs: AT('2026-06-01T00:00:00Z') } });
+  const ev = runEvidence({
+    claims: [c],
+    sessions: Array.from({ length: 30 }, () => session('p', [turn(['Read'])])),
+    bodies: new Map([[c.id, 'Always run npm test before committing.']]),
+    currentProject: 'p',
+  }).get(c.id)!;
+  assert.equal(ev.observedIn, 30);
+});
+
+test('an unknown edit time excludes nothing', () => {
+  const c = claim({ id: 'nomtime' });
+  const ev = runEvidence({
+    claims: [c],
+    sessions: Array.from({ length: 12 }, () => session('p', [turn(['Read'], [], '2020-01-01T00:00:00Z')])),
+    bodies: new Map([[c.id, 'Always run npm test before committing.']]),
+    currentProject: 'p',
+  }).get(c.id)!;
+  assert.equal(ev.observedIn, 12);
+});
+
+// ── firing somewhere is not the same as being load-bearing ──────────────────────────
+
+test('a rate below two percent reads as unproven, above it as load-bearing', () => {
+  // The verdict flips on this threshold, so it is pinned from both sides: an untested one
+  // can drift by a factor of twenty-five without a test noticing.
+  const c = claim({ id: 'rare' });
+  const verdictAt = (hits: number, total: number) =>
+    runEvidence({
+      claims: [c],
+      sessions: [
+        ...Array.from({ length: hits }, () => session('p', [turn(['Bash'], ['npm test'])])),
+        ...Array.from({ length: total - hits }, () => session('p', [turn(['Bash'], ['git status'])])),
+      ],
+      bodies: new Map([[c.id, 'Always run npm test before committing.']]),
+      currentProject: 'p',
+    }).get(c.id)!.verdict;
+  assert.equal(verdictAt(1, 100), 'unproven', '1 in 100 is 1%');
+  assert.equal(verdictAt(3, 100), 'load-bearing', '3 in 100 is 3%');
 });
