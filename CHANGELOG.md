@@ -19,8 +19,93 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   and its sample. That is worth building when there is history to validate it against.
 - **T4 — field randomisation.** Vary the harness on runs that were going to happen anyway,
   on dead-classified claims only. A randomised trial at zero incremental cost.
-- **Patch generator.** Emit the demotion as a reviewable diff rather than a description.
 - **Readers for other harnesses.** Codex and Antigravity transcript formats.
+
+## [0.3.0] — 2026-08-27
+
+The action this project has argued for since its first commit, as a diff you can read.
+
+### Added — `--patch`
+
+The README has called demotion the primary action from the start: a section nothing was
+observed to need moves out of the memory file and into a skill, where only its frontmatter
+description stays resident and the body loads when something asks for it. Until now the
+tool described that move in prose and left the editing to you.
+
+`--patch` writes it as a unified diff. One hunk removes the section, one creates
+`.claude/skills/<slug>/SKILL.md` holding the body. It is applied by you, with `git apply` or
+`patch -p1`, and `git apply -R` puts everything back — a property the tests pin, because a
+proposal you cannot undo is not a proposal.
+
+**The description is the part that matters, and the patch says so before it shows a single
+line of diff.** After the move it is the only text the model sees, and it is the entire
+mechanism by which the skill ever loads again: one that does not say *when* the rule applies
+silences the rule with no error anywhere. What is generated is drafted from your own heading
+and opening sentence — a starting point for a judgement only the author can make, and the
+tool does not pretend otherwise.
+
+### Refusals, which are most of the design
+
+- **A section that changed since the scan is refused.** The scan is a photograph; patching
+  text nobody measured is how a memory file gets corrupted quietly.
+- **An existing skill is never overwritten**, and two sections that want the same name do
+  not collide — the second is reported, not silently merged.
+- **A claim outside the directory the patch applies from is skipped**, so a diff never
+  reaches out of its own root. Project and `~/.claude` memory files therefore produce
+  separate patches, applied from separate directories.
+- Every refusal carries its reason. Nothing is skipped silently.
+
+### Correctness
+
+- Lines are split on the newline byte alone, keeping any carriage return, so the diff is
+  byte-identical to the file it was generated from. Splitting on `/\r?\n/` would emit a
+  patch that cannot apply to a CRLF memory file — the default on Windows.
+- Several removals from one file carry a cumulative offset on the `+` side, and ranges
+  close enough for their context to overlap become one hunk.
+- Demotion only ever deletes a contiguous block and creates a file, so there is no general
+  diff algorithm here and no dependency taken for one. The package still has zero.
+
+### Two defects an adversarial review found before release
+
+Four independent reviewers attacked this, and two of the findings were the exact failure
+the module comment names as the stake — a rule deleted from the memory file whose
+replacement never loads, with no error anywhere.
+
+- **A project section was emitted into the user patch as well.** The two patches were
+  distinguished by asking whether the file sits under the root, and a project normally sits
+  *inside* the home directory, so every project section passed both tests. Its skill was
+  then written to the machine-wide skills directory, putting one project's rule in every
+  other project's always-on prefix. Applying both patches left rejected hunks behind.
+  Scope — the field the scanner has always set — is what decides now, and containment is
+  only a second guard behind it.
+- **A backslash in a section broke the frontmatter it produced.** The description was
+  written as a double-quoted YAML scalar, which reads backslash escapes, and a memory file
+  is full of them: a regex, a Windows path, an escaped pipe in a table. The result either
+  failed to parse — so the skill never loaded, while the same patch had already deleted the
+  section — or silently reworded the author. Escaping only the double quote made one case
+  worse, turning the legal `\\"` into the illegal `\\'`. Single-quoted scalars have no
+  escapes at all.
+
+Also from the review: `--json --patch` silently wrote nothing and now writes the patch and
+reports it on stderr; a stale patch from an earlier run is deleted rather than left to
+apply cleanly against a verdict that has changed; the user root comes from `claudeHome()`
+like everything else rather than from `os.homedir()`; a description is no longer drafted
+out of a fenced code block; and the printed command is `git -C <root> apply`, which works
+outside a repository and in PowerShell, where `patch -p1 < file` does not.
+
+### Added — tests
+
+- 179 → **200**. `test/patch.test.ts` builds real repositories and runs the real `git apply`:
+  a patch that applies and moves the section, two demotions in one file, a CRLF file, a
+  section edited since the scan, a claim outside the root, an existing skill, a name
+  collision, and an applied demotion reversed back to the original. A diff that looks right
+  and does not apply is worse than no diff.
+- Both review findings are pinned from the failing side: a project claim offered to the
+  user patch, four real backslash cases parsed back with a YAML single-quoted-scalar reader
+  written for the purpose, and quotes that would end the scalar early. Reverting either fix
+  fails tests.
+- Also pinned: three removals from one file carrying the right cumulative offset, a section
+  whose body is diff syntax, and a file with no trailing newline patched at either end.
 
 ## [0.2.2] — 2026-08-27
 
@@ -540,7 +625,8 @@ Initial implementation.
 - **The primary action is demotion, not deletion.** Moving an always-on block to on-demand
   is a large win at near-zero risk. Deletion is the rare case.
 
-[Unreleased]: https://github.com/alebgl77/harnessmeter/compare/v0.2.2...HEAD
+[Unreleased]: https://github.com/alebgl77/harnessmeter/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/alebgl77/harnessmeter/compare/v0.2.2...v0.3.0
 [0.2.2]: https://github.com/alebgl77/harnessmeter/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/alebgl77/harnessmeter/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/alebgl77/harnessmeter/compare/v0.1.4...v0.2.0

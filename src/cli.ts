@@ -8,13 +8,16 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { analyze, prepare } from './analyze.ts';
+import os from 'node:os';
+import { analyze, prepare, type Prepared } from './analyze.ts';
 import { runEvidence } from './evidence.ts';
 import { mergeT2, runT2, t2Candidates, type T2Result } from './evidence-t2.ts';
 import { detectAgent } from './agent.ts';
+import { buildPatch } from './patch.ts';
 import { renderTerminal } from './report-term.ts';
 import { renderHtml } from './report-html.ts';
-import { findProjectDir, listProjectDirs, scanSessions } from './transcript.ts';
+import { claudeHome, findProjectDir, listProjectDirs, scanSessions } from './transcript.ts';
+import type { Analysis } from './types.ts';
 import { VERSION } from './version.ts';
 
 const HELP = `
@@ -27,6 +30,7 @@ harnessmeter ${VERSION} — price the leases your context window is carrying
   --json             print machine-readable analysis to stdout
   --no-html          skip writing the HTML report
   --out <path>       HTML output path (default .harnessmeter/report.html)
+  --patch            write the demotions as a reviewable diff, and apply nothing
 
   --t2               escalate unproven claims to your local agent for judgement
   --t2-model <m>     model for T2 (default: sonnet)
@@ -40,7 +44,7 @@ harnessmeter ${VERSION} — price the leases your context window is carrying
 
 type Args = {
   all: boolean; limit: number; json: boolean; html: boolean; out?: string;
-  t2: boolean; t2Model?: string; yes: boolean; help: boolean;
+  patch: boolean; t2: boolean; t2Model?: string; yes: boolean; help: boolean;
 };
 
 /**
@@ -58,12 +62,13 @@ function safeModel(v: string | undefined): string | undefined {
 }
 
 function parseArgs(argv: string[]): Args {
-  const a: Args = { all: false, limit: 400, json: false, html: true, t2: false, yes: false, help: false };
+  const a: Args = { all: false, limit: 400, json: false, html: true, patch: false, t2: false, yes: false, help: false };
   for (let i = 0; i < argv.length; i++) {
     const v = argv[i];
     if (v === '--all') a.all = true;
     else if (v === '--json') a.json = true;
     else if (v === '--no-html') a.html = false;
+    else if (v === '--patch') a.patch = true;
     else if (v === '--t2') a.t2 = true;
     else if (v === '--yes' || v === '-y') a.yes = true;
     else if (v === '--help' || v === '-h') a.help = true;
@@ -100,6 +105,74 @@ async function confirmT2(candidates: number, model: string, auto: boolean): Prom
   });
   process.stderr.write('\n');
   return answer === 'y' || answer === 'yes';
+}
+
+/**
+ * Write the demotions as diffs, and apply nothing.
+ *
+ * Two patches, because a project's memory file and the user's are applied from different
+ * directories and land their skills in different places. Which patch a claim belongs to is
+ * its SCOPE — the field the scanner already set — and never where its file happens to sit:
+ * a project normally lives inside the home directory, so a containment test would admit
+ * every project section into the user patch as well and write its skill into the
+ * machine-wide skills directory, putting one project's rule in every other project's
+ * always-on prefix.
+ */
+function writePatches(cwd: string, analysis: Analysis, prepared: Prepared, quiet: boolean): void {
+  const home = claudeHome();
+  const roots = [
+    { root: cwd, scope: 'project' as const, skillDir: '.claude/skills', name: 'demote.patch', label: 'this project' },
+    { root: home, scope: 'user' as const, skillDir: 'skills', name: 'demote-user.patch', label: 'your user harness' },
+  ];
+
+  const dir = path.join(cwd, '.harnessmeter');
+  // Reports go to stderr so that --json stdout stays machine-readable.
+  const say = (s: string) => (quiet ? process.stderr : process.stdout).write(s);
+  let wrote = 0;
+
+  for (const { root, scope, skillDir, name, label } of roots) {
+    const set = buildPatch({
+      claims: analysis.claims,
+      proposals: analysis.proposals,
+      bodies: prepared.bodies,
+      root,
+      scope,
+      skillDir,
+    });
+    const out = path.join(dir, name);
+
+    if (!set.text) {
+      // A patch left from an earlier run still applies cleanly, and would demote a section
+      // this run no longer considers dead. Stale advice is worse than none.
+      if (fs.existsSync(out)) {
+        fs.rmSync(out, { force: true });
+        say(`  patch   removed a stale ${name} — nothing to demote in ${label} now\n`);
+      }
+      for (const s of set.skipped) say(`  skipped ${s.label}: ${s.reason}\n`);
+      continue;
+    }
+
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(out, set.text, 'utf8');
+    wrote++;
+
+    const rel = path.relative(cwd, out) || out;
+    const saved = set.entries.reduce((n, e) => n + e.savingPerSession, 0);
+    const n = set.entries.length;
+    say(
+      `  patch   ${rel}  ${n} demotion${n === 1 ? '' : 's'} from ${label}` +
+        ` — ~${Math.round(saved).toLocaleString('en-US')} eff tok/session\n`,
+    );
+    // Applied FROM its root, which is not always the directory we are standing in.
+    // `git -C` works outside a repository too, so one command covers both roots -- and
+    // unlike `patch -p1 < file` it runs in PowerShell, where `<` is not a redirect.
+    say(`          review it, then: git -C "${set.root}" apply "${out}"
+`);
+    for (const s of set.skipped) say(`  skipped ${s.label}: ${s.reason}\n`);
+  }
+
+  if (!wrote) say('  patch   nothing to demote — no always-on section was found dead.\n');
+  say('\n');
 }
 
 async function main() {
@@ -175,6 +248,9 @@ async function main() {
   const analysis = analyze(cwd, sessions, prepared, t2, currentProject);
 
   if (args.json) {
+    // --patch is an explicit request and must not be silently dropped by --json. The
+    // patch is written and reported on stderr, so stdout stays a single JSON document.
+    if (args.patch) writePatches(cwd, analysis, prepared, true);
     process.stdout.write(
       JSON.stringify(
         { ...analysis, evidence: Object.fromEntries(analysis.evidence) },
@@ -186,6 +262,8 @@ async function main() {
   }
 
   process.stdout.write(renderTerminal(analysis) + '\n');
+
+  if (args.patch) writePatches(cwd, analysis, prepared, false);
 
   if (args.html) {
     const out = args.out ?? path.join(cwd, '.harnessmeter', 'report.html');

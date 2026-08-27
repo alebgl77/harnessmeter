@@ -41,6 +41,7 @@ has to be earned.
 ```sh
 npx harnessmeter          # this project
 npx harnessmeter --all    # every project on this machine
+npx harnessmeter --patch  # write the demotions as a diff you can read
 npx harnessmeter --t2     # escalate the unproven claims (see below)
 ```
 
@@ -148,18 +149,54 @@ Two more design notes worth stating plainly:
 rule" arm already exists — it's in your session transcripts. We only pay for the
 counterfactual. Half the cost, and perfect pairing, because it is literally the same task.
 
-**Your `git log` is an experiment log.** Different repos adopt the same piece of advice at
-different dates. That is exactly the setting where staggered difference-in-differences
-identifies an effect. Nobody has read `.claude/` history as an intervention registry.
+**Your `git log` is an experiment log.** A claim is dated by the commit that last touched
+its own lines, so a rule rewritten yesterday is not judged on last month's sessions. That
+much ships today. Turning it into a *causal* estimate needs many repositories adopting the
+same advice on different dates — see the roadmap for why this tool will not be the thing
+that collects them.
 
 ## What it proposes
 
-The primary action is **not deletion — it's demotion.**
+The primary action is **not deletion — it's demotion.** A section nothing was observed to
+need moves out of your memory file and into a skill, where only its frontmatter description
+stays resident and the body loads when something asks for it.
 
-> These 3,200 tokens are always-on and apply to 4% of your sessions.
-> Here is the PR that turns them into a skill.
+`--patch` writes that move as a unified diff and applies nothing:
 
-Massive win, near-zero risk, mergeable in thirty seconds. Deletion is the rare case.
+```sh
+npx harnessmeter --patch
+#   patch   .harnessmeter/demote.patch  1 demotion from this project — ~4,820 eff tok/session
+#           review it, then: git -C "/path/to/project" apply ".../demote.patch"
+```
+
+```diff
+ # Testing
+ Always run npm test before committing, and never skip the suite.
+
+-# Legacy migration notes
+-The old v1 API used snake_case for every field name, and the migration
+-script in tools/migrate.py rewrote them on read. That script was removed
+-in 2024 and nothing depends on it any more.
++++ b/.claude/skills/legacy-migration-notes/SKILL.md
++---
++name: legacy-migration-notes
++description: "Use when working on legacy migration notes. The old v1 API used snake_case…"
++---
+```
+
+**Read the description before applying.** After the move it is the only part the model
+sees, and it is the entire mechanism by which the skill loads again — a description that
+does not say *when* the rule matters will silence the rule with no error anywhere. What the
+tool drafts comes from your own heading and opening sentence: a starting point, not a
+decision. The patch says so at the top, above the diff.
+
+`git apply -R` puts everything back — the tests pin that, because a proposal you cannot
+undo is not a proposal. Your project's memory file and your user one produce **separate
+patches**, applied from separate directories: a project rule demoted into the machine-wide
+skills directory would sit in the always-on prefix of every other project, which is the
+opposite of what this tool measures.
+
+Deletion is the rare case.
 
 Every proposal ships with a **receipt**: cost, measured yield, evidence tier, the sessions
 that justify it, and — for a claim that never fired — the 95% upper bound on how often it
@@ -195,11 +232,19 @@ transcripts. What ships today is:
 - claim extraction from `CLAUDE.md`, skills, subagents, MCP servers
 - evidence tiers **T0** (presence), **T1** (consequence) and **T2** (judgement via your own agent)
 - lease ledger, dead share, demotion proposals with receipts, terminal + HTML report
+- `--patch`: the demotion as a reviewable, reversible diff — nothing is ever applied
 - a balance line that reports what the run cost and when it pays for itself
 
-Not yet: **T3** natural experiments over harness git history, **T4** field randomisation, and
-the patch generator. Per-claim token counts are calibrated estimates at ~3.8 chars/token
-and are labelled as estimates everywhere they appear; session-level figures are exact.
+Not yet: **T4** field randomisation, and the causal half of **T3**. Git history now dates
+each claim by the commit that last touched its own lines, which is the intervention
+registry a natural experiment needs — but identifying an *effect* by staggered
+difference-in-differences takes many machines adopting the same advice on different dates,
+and this tool reads only local files and sends nothing anywhere. That design is one the
+project has promised never to enable, and the roadmap says so rather than implying
+otherwise.
+
+Per-claim token counts are calibrated estimates at ~3.8 chars/token and are labelled as
+estimates everywhere they appear; session-level figures are exact.
 
 The measurement protocol for the higher tiers will be **pre-registered and published before
 any results are**.
