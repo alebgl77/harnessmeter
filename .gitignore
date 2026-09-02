@@ -23,6 +23,7 @@ secrets.*
 # ── Tool output (derived from a real repo — never commit) ────────────
 .harnessmeter/
 *.harnessmeter.json
+/bench-results.json
 
 # ── Build & deps ─────────────────────────────────────────────────────
 node_modules/

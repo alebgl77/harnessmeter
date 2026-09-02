@@ -15,6 +15,7 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { buildPatch, draftDescription, skillSlug } from '../src/patch.ts';
 import { extractProseClaims } from '../src/harness.ts';
+import { prepare } from '../src/analyze.ts';
 import type { Claim, Proposal } from '../src/types.ts';
 
 const NL = String.fromCharCode(10);
@@ -60,7 +61,7 @@ function demotion(c: Claim, saving = 1234): Proposal {
     savingPerSession: saving,
     receipt: {
       tier: 'T1', sessions: 40, firedIn: 0, class: 'workflow',
-      protected: false, confidence: 'high', boundPct: 7.2,
+      protected: false, confidence: 'high', confidenceSource: 'zero-hit-bound', boundPct: 7.2,
     },
   };
 }
@@ -78,6 +79,19 @@ function apply(dir: string, patch: string): void {
   execFileSync('git', ['apply', '--check', 'p.patch'], { cwd: dir, stdio: 'pipe' });
   execFileSync('git', ['apply', 'p.patch'], { cwd: dir, stdio: 'pipe' });
   fs.rmSync(file);
+}
+
+function prepareOnly(dir: string) {
+  const previous = process.env.CLAUDE_HOME;
+  process.env.CLAUDE_HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'hm-empty-home-'));
+  try {
+    const pre = prepare(dir);
+    pre.claims = pre.claims.filter((claim) => path.resolve(claim.source.file) === path.resolve(dir, 'CLAUDE.md'));
+    return pre;
+  } finally {
+    if (previous === undefined) delete process.env.CLAUDE_HOME;
+    else process.env.CLAUDE_HOME = previous;
+  }
 }
 
 test('a demotion produces a patch that applies and moves the section', () => {
@@ -160,6 +174,62 @@ test('a section edited since the scan is refused, not patched hopefully', () => 
   assert.match(set.skipped[0].reason, /changed since the scan/);
 });
 
+test('a change elsewhere in a snapshotted file refuses every demotion in that file', () => {
+  const dir = repo(MEMORY);
+  const pre = prepareOnly(dir);
+  const beta = pre.claims.find((c) => c.label.endsWith('Beta'))!;
+  const changed = [...MEMORY];
+  changed[1] = 'The first section changed after prepare, while the target section stayed identical.';
+  fs.writeFileSync(path.join(dir, 'CLAUDE.md'), changed.join(NL) + NL, 'utf8');
+
+  const set = buildPatch({
+    claims: pre.claims, proposals: [demotion(beta)], bodies: pre.bodies, snapshot: pre.snapshot,
+    root: dir, scope: 'project', skillDir: '.claude/skills',
+  });
+  assert.equal(set.entries.length, 0);
+  assert.equal(set.text, '');
+  assert.match(set.skipped[0].reason, /changed since (?:the )?scan/);
+});
+
+test('a timestamp-only touch leaves a snapshotted file patchable', () => {
+  const dir = repo(MEMORY);
+  const pre = prepareOnly(dir);
+  const beta = pre.claims.find((c) => c.label.endsWith('Beta'))!;
+  const file = path.join(dir, 'CLAUDE.md');
+  const future = new Date(Date.now() + 10_000);
+  fs.utimesSync(file, future, future);
+
+  const set = buildPatch({
+    claims: pre.claims, proposals: [demotion(beta)], bodies: pre.bodies, snapshot: pre.snapshot,
+    root: dir, scope: 'project', skillDir: '.claude/skills',
+  });
+  assert.equal(set.skipped.length, 0, JSON.stringify(set.skipped));
+  assert.equal(set.entries.length, 1);
+});
+
+test('patch generation reads a target once and keeps that one version throughout', () => {
+  const dir = repo(MEMORY);
+  const pre = prepareOnly(dir);
+  const beta = pre.claims.find((c) => c.label.endsWith('Beta'))!;
+  const file = path.join(dir, 'CLAUDE.md');
+  let reads = 0;
+
+  const set = buildPatch({
+    claims: pre.claims, proposals: [demotion(beta)], bodies: pre.bodies, snapshot: pre.snapshot,
+    root: dir, scope: 'project', skillDir: '.claude/skills',
+    readFile(candidate) {
+      reads++;
+      const bytes = fs.readFileSync(candidate);
+      fs.writeFileSync(file, '# Mutated after the patch read\nThis version must never enter the generated diff.\n');
+      return bytes;
+    },
+  });
+  assert.equal(reads, 1);
+  assert.equal(set.entries.length, 1, JSON.stringify(set.skipped));
+  assert.match(set.text, /# Alpha/);
+  assert.doesNotMatch(set.text, /Mutated after the patch read/);
+});
+
 test('a claim outside the root is skipped rather than reaching out of it', () => {
   const dir = repo(MEMORY);
   const elsewhere = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'hm-other-')));
@@ -201,6 +271,46 @@ test('two sections wanting the same skill name do not collide', () => {
   assert.equal(set.entries.length, 1, 'only the first takes the name');
   assert.match(set.skipped[0].reason, /already claims skills\/rules/);
   apply(dir, set.text);
+});
+
+test('an interleaved higher-priority proposal wins a cross-file slug collision', () => {
+  const dir = repo([
+    '# A1',
+    'The first section in file A is long enough to become a claim in this fixture.',
+    '',
+    '# Shared',
+    'The lower-priority shared section lives in file A and must lose the collision.',
+  ]);
+  const other = path.join(dir, 'OTHER.md');
+  fs.writeFileSync(other, [
+    '# Shared',
+    'The higher-priority shared section lives in file B and must win the collision.',
+  ].join(NL) + NL, 'utf8');
+  const used = new Map<string, number>();
+  const claims = [
+    ...extractProseClaims(path.join(dir, 'CLAUDE.md'), 'project', undefined, used),
+    ...extractProseClaims(other, 'project', undefined, used),
+  ];
+  const a1 = claims.find((claim) => claim.label.endsWith('A1'))!;
+  const sharedA = claims.find((claim) => claim.source.file.endsWith('CLAUDE.md') && claim.label.endsWith('Shared'))!;
+  const sharedB = claims.find((claim) => claim.source.file.endsWith('OTHER.md') && claim.label.endsWith('Shared'))!;
+  const bodies = new Map<string, string>();
+  for (const claim of claims) {
+    const lines = fs.readFileSync(claim.source.file, 'utf8').split(/\r?\n/);
+    bodies.set(claim.id, lines.slice(claim.source.startLine - 1, claim.source.endLine).join(NL).trim());
+  }
+
+  const proposals = [demotion(a1, 1_000), demotion(sharedB, 900), demotion(sharedA, 100)];
+  const set = buildPatch({
+    claims, proposals, bodies,
+    root: dir, scope: 'project', skillDir: '.claude/skills',
+  });
+
+  assert.deepEqual(set.entries.map((entry) => entry.claimId), [a1.id, sharedB.id]);
+  assert.deepEqual(set.entries.map((entry) => entry.savingPerSession), [1_000, 900]);
+  assert.equal(set.skipped.length, 1);
+  assert.equal(set.skipped[0].label, sharedA.label);
+  assert.match(set.skipped[0].reason, /already claims skills\/shared/);
 });
 
 test('only demotions are patched', () => {

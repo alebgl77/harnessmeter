@@ -21,7 +21,9 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { createHash } from 'node:crypto';
 import type { Claim, Proposal } from './types.ts';
+import type { HarnessSnapshot } from './harness.ts';
 
 /** Lines of unchanged text kept either side of a change, so the hunk can be located. */
 const CONTEXT = 3;
@@ -195,6 +197,10 @@ export type PatchInput = {
   proposals: Proposal[];
   /** Section text as it was when scanned, keyed by claim id. */
   bodies: Map<string, string>;
+  /** Whole files from the scan. When present, any byte change refuses the whole file. */
+  snapshot?: HarnessSnapshot;
+  /** Raw current-file reader, exposed so the single-read invariant is testable. */
+  readFile?: (file: string) => Buffer;
   /** Where the patch will be applied from. */
   root: string;
   /**
@@ -218,11 +224,12 @@ export type PatchInput = {
  * the scan. Anything else — the file moved, the section was edited, the target already
  * exists — is skipped with a reason rather than patched hopefully.
  */
-export function buildPatch({ claims, proposals, bodies, root, scope, skillDir }: PatchInput): PatchSet {
+export function buildPatch(input: PatchInput): PatchSet {
+  const { claims, proposals, bodies, snapshot, root, scope, skillDir } = input;
   const byId = new Map(claims.map((c) => [c.id, c]));
   const entries: PatchEntry[] = [];
   const skipped: { label: string; reason: string }[] = [];
-  const perFile = new Map<string, { claim: Claim; proposal: Proposal }[]>();
+  const candidates: { claim: Claim; proposal: Proposal; file: string }[] = [];
   const takenSlugs = new Set<string>();
 
   for (const p of proposals) {
@@ -245,55 +252,89 @@ export function buildPatch({ claims, proposals, bodies, root, scope, skillDir }:
       continue;
     }
 
-    let current: string;
+    candidates.push({ claim, proposal: p, file });
+  }
+
+  // Read each target once. Hash, range checks and diff generation all consume this one
+  // immutable string, so a writer cannot slip a second version between validation and use.
+  const fileState = new Map<string, { current?: string; invalidReason?: string }>();
+  const acceptedByFile = new Map<string, { claim: Claim; proposal: Proposal }[]>();
+  const readCurrent = input.readFile ?? ((file: string) => fs.readFileSync(file));
+  for (const file of new Set(candidates.map((candidate) => candidate.file))) {
+    let bytes: Buffer;
     try {
-      current = fs.readFileSync(file, 'utf8');
+      bytes = readCurrent(file);
     } catch {
-      skipped.push({ label: p.label, reason: 'file could not be read' });
+      fileState.set(file, { invalidReason: 'file could not be read' });
       continue;
     }
+    const current = bytes.toString('utf8');
 
-    // The scan is a photograph. If the section has changed since, the patch would be
-    // applied to text nobody measured.
-    const scanned = bodies.get(claim.id);
-    const now = current
-      .split(/\r?\n/)
-      .slice(claim.source.startLine - 1, claim.source.endLine)
-      .join('\n')
-      .trim();
-    if (!scanned || now !== scanned.trim()) {
-      skipped.push({ label: p.label, reason: 'the section changed since the scan' });
-      continue;
+    if (snapshot) {
+      const scannedFile = snapshot.get(path.resolve(file));
+      if (!scannedFile) {
+        fileState.set(file, { invalidReason: 'no file snapshot from the scan' });
+        continue;
+      }
+      const currentHash = createHash('sha256').update(bytes).digest('hex');
+      if (currentHash !== scannedFile.sha256) {
+        fileState.set(file, { invalidReason: 'the file changed since the scan' });
+        continue;
+      }
     }
+    fileState.set(file, { current });
+  }
 
-    const slug = skillSlug(p.label);
-    if (takenSlugs.has(slug)) {
-      skipped.push({ label: p.label, reason: `another section already claims skills/${slug}` });
-      continue;
-    }
-    const skillRel = path.posix.join(...skillDir.split(/[\\/]/), slug, 'SKILL.md');
-    if (fs.existsSync(path.join(root, skillRel))) {
-      skipped.push({ label: p.label, reason: `${skillRel} already exists` });
-      continue;
-    }
-    takenSlugs.add(slug);
+  // Safety is decided per file above, but slug ownership is decided in proposal priority
+  // order. Grouping first would let a lower-priority proposal in the first file steal a
+  // slug from a higher-priority proposal in a later file.
+  for (const { claim, proposal, file } of candidates) {
+      const state = fileState.get(file)!;
+      if (state.invalidReason) {
+        skipped.push({ label: proposal.label, reason: state.invalidReason });
+        continue;
+      }
+      const current = state.current!;
+      // Keep the historical section check as a defence for callers without a whole-file
+      // snapshot, and for malformed externally supplied snapshot/body pairs.
+      const scanned = bodies.get(claim.id);
+      const now = current
+        .split(/\r?\n/)
+        .slice(claim.source.startLine - 1, claim.source.endLine)
+        .join('\n')
+        .trim();
+      if (!scanned || now !== scanned.trim()) {
+        skipped.push({ label: proposal.label, reason: 'the section changed since the scan' });
+        continue;
+      }
 
-    const list = perFile.get(file) ?? [];
-    list.push({ claim, proposal: p });
-    perFile.set(file, list);
-    entries.push({
-      claimId: claim.id,
-      label: p.label,
-      skillPath: skillRel,
-      savingPerSession: p.savingPerSession,
-      description: draftDescription(p.label, scanned),
-    });
+      const slug = skillSlug(proposal.label);
+      if (takenSlugs.has(slug)) {
+        skipped.push({ label: proposal.label, reason: `another section already claims skills/${slug}` });
+        continue;
+      }
+      const skillRel = path.posix.join(...skillDir.split(/[\\/]/), slug, 'SKILL.md');
+      if (fs.existsSync(path.join(root, skillRel))) {
+        skipped.push({ label: proposal.label, reason: `${skillRel} already exists` });
+        continue;
+      }
+      takenSlugs.add(slug);
+      const accepted = acceptedByFile.get(file) ?? [];
+      accepted.push({ claim, proposal });
+      acceptedByFile.set(file, accepted);
+      entries.push({
+        claimId: claim.id,
+        label: proposal.label,
+        skillPath: skillRel,
+        savingPerSession: proposal.savingPerSession,
+        description: draftDescription(proposal.label, scanned),
+      });
   }
 
   const chunks: string[] = [];
-  for (const [file, list] of perFile) {
+  for (const [file, list] of acceptedByFile) {
     const rel = path.relative(path.resolve(root), file).split(path.sep).join('/');
-    const original = fs.readFileSync(file, 'utf8');
+    const original = fileState.get(file)!.current!;
     chunks.push(
       deletionDiff(
         rel,

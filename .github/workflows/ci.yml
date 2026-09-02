@@ -79,6 +79,26 @@ jobs:
       - name: tsc --noEmit
         run: npm run typecheck
 
+  bench-regression:
+    name: benchmark regression · node 24 · ubuntu
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+      - name: structural and memory regression gates
+        run: npm run bench:ci
+      - name: upload benchmark receipt
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: bench-results
+          path: bench-results.json
+          retention-days: 7
+
   package:
     # A package that works from a checkout and fails from node_modules is the failure mode
     # that matters: Node does not strip types under node_modules, so the published artifact

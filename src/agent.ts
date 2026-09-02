@@ -85,7 +85,7 @@ function run(bin: string, args: string[], stdin: string, timeoutMs: number): Pro
     child.on('error', (e) => done(() => reject(e)));
     child.on('close', (code) => {
       done(() => {
-        if (code !== 0 && !out.trim()) reject(new Error(err.trim() || `agent exited ${code}`));
+        if (code !== 0) reject(new Error(err.trim() || `agent exited ${code}`));
         else resolve(out);
       });
     });
@@ -105,6 +105,49 @@ function run(bin: string, args: string[], stdin: string, timeoutMs: number): Pro
 
 export type AskOptions = { model?: string; timeoutMs?: number };
 
+function record(v: unknown): Record<string, unknown> | undefined {
+  return v !== null && typeof v === 'object' && !Array.isArray(v)
+    ? v as Record<string, unknown>
+    : undefined;
+}
+
+function metric(v: unknown): number | undefined {
+  return typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : undefined;
+}
+
+/**
+ * Claude's JSON envelope is not a measurement merely because an `usage` object exists.
+ * Input and output are the two required counters; optional cache fields are accepted only
+ * when every field that is present is itself a finite non-negative number.
+ */
+function claudeUsage(v: unknown): AgentResult['usage'] {
+  const usage = record(v);
+  if (!usage) return undefined;
+  const inputTokens = metric(usage.input_tokens);
+  const outputTokens = metric(usage.output_tokens);
+  if (inputTokens === undefined || outputTokens === undefined) return undefined;
+
+  const optional = (owner: Record<string, unknown>, key: string): number | undefined =>
+    key in owner ? metric(owner[key]) : 0;
+  const cacheReadTokens = optional(usage, 'cache_read_input_tokens');
+  const aggregateWrite = optional(usage, 'cache_creation_input_tokens');
+  if (cacheReadTokens === undefined || aggregateWrite === undefined) return undefined;
+
+  let cacheWriteTokens = aggregateWrite;
+  if ('cache_creation' in usage) {
+    const created = record(usage.cache_creation);
+    if (!created) return undefined;
+    const fiveMinute = optional(created, 'ephemeral_5m_input_tokens');
+    const oneHour = optional(created, 'ephemeral_1h_input_tokens');
+    if (fiveMinute === undefined || oneHour === undefined) return undefined;
+    if ('ephemeral_5m_input_tokens' in created || 'ephemeral_1h_input_tokens' in created) {
+      cacheWriteTokens = fiveMinute + oneHour;
+    }
+  }
+
+  return { inputTokens, cacheReadTokens, cacheWriteTokens, outputTokens };
+}
+
 export async function ask(
   agent: AgentInfo,
   prompt: string,
@@ -118,19 +161,12 @@ export async function ask(
     const raw = await run(agent.bin, args, prompt, timeoutMs);
     try {
       const j = JSON.parse(raw);
-      const u = j.usage ?? {};
-      const created = u.cache_creation ?? {};
+      const costUsd = metric(j.total_cost_usd);
+      const usage = claudeUsage(j.usage);
       return {
         text: String(j.result ?? j.text ?? j.content ?? ''),
-        costUsd: typeof j.total_cost_usd === 'number' ? j.total_cost_usd : undefined,
-        usage: {
-          inputTokens: u.input_tokens ?? 0,
-          cacheReadTokens: u.cache_read_input_tokens ?? 0,
-          cacheWriteTokens:
-            (created.ephemeral_5m_input_tokens ?? 0) + (created.ephemeral_1h_input_tokens ?? 0) ||
-            (u.cache_creation_input_tokens ?? 0),
-          outputTokens: u.output_tokens ?? 0,
-        },
+        ...(costUsd === undefined ? {} : { costUsd }),
+        ...(usage === undefined ? {} : { usage }),
       };
     } catch {
       // Older CLIs may ignore --output-format; treat stdout as the answer.

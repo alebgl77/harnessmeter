@@ -108,15 +108,26 @@ function proposals(a: Analysis): string {
         <div class="ph"><code>${esc(p.label)}</code>
           <span class="act">${p.action === 'demote' ? 'demote to on-demand' : p.action === 'evict' ? 'remove' : 'investigate'}</span>
         </div>
-        ${p.savingPerSession > 0 ? `<div class="save">saves ~${n(p.savingPerSession)} effective tokens / session</div>` : '<div class="save muted">schema size is runtime-only — counted in the residual</div>'}
-        <div class="receipt">receipt · tier ${p.receipt.tier} · fired ${p.receipt.firedIn}/${p.receipt.sessions} sessions · class ${p.receipt.class} · confidence ${p.receipt.confidence}</div>
+        ${a.telemetryCoverage.cacheSessions === 0
+          ? '<div class="save muted">saving unknown — no complete telemetry session</div>'
+          : p.savingPerSession > 0
+            ? `<div class="save">saves ~${n(p.savingPerSession)} effective tokens / session</div>`
+            : '<div class="save muted">schema size is runtime-only — counted in the residual</div>'}
+        <div class="receipt">receipt · tier ${p.receipt.tier} · fired ${p.receipt.firedIn}/${p.receipt.sessions} sessions · class ${p.receipt.class} · confidence ${p.receipt.confidence}${p.receipt.confidenceSource === 't2-judge' ? ' · T2 judge' : ''}</div>
       </div>`,
     )
     .join('');
 }
 
 export function renderHtml(a: Analysis): string {
-  const ratio = naiveRatio(a.medianTurnsPerSession, a.cacheTtl, a.medianPrefixWrites);
+  const coverage = a.telemetryCoverage;
+  const hasBilling = coverage.knownTurns > 0;
+  // Preserve the established full-coverage rendering for explicit synthetic zero turns.
+  const hasPrefix =
+    coverage.status === 'full' || (coverage.prefixSessions > 0 && coverage.cacheSessions > 0);
+  const ratio = hasPrefix
+    ? naiveRatio(a.medianTurnsPerSession, a.cacheTtl, a.medianPrefixWrites)
+    : undefined;
   const saved = a.proposals.reduce((s, x) => s + x.savingPerSession, 0);
   const b = a.billedTokens;
 
@@ -175,27 +186,36 @@ border-radius:6px;padding:12px 16px;color:var(--mut);font-size:12.5px;margin:14p
 <h1>harness<span>meter</span></h1>
 <p class="sub">${n(a.sessionCount)} sessions · ${n(a.turnCount)} turns · ${a.projects.length} project${a.projects.length === 1 ? '' : 's'} · ${esc(a.scannedAt.slice(0, 16).replace('T', ' '))}</p>
 
-<h2>BILLED — EXACT</h2>
+<h2>BILLED — ${coverage.status === 'full' ? 'EXACT' : coverage.status === 'partial' ? 'MEASURED SUBTOTAL' : 'UNKNOWN'}</h2>
 <div class="grid">
-  <div class="card"><div class="k">api-equivalent</div><div class="v">$${a.spendUsd.toFixed(2)}<small> list price</small></div></div>
-  <div class="card"><div class="k">cache reads <small>0.1×</small></div><div class="v">${n(b.cacheRead)}</div></div>
-  <div class="card"><div class="k">cache writes <small>1.25× / 2×</small></div><div class="v">${n(b.cacheWrite5m + b.cacheWrite1h)}</div></div>
-  <div class="card"><div class="k">output</div><div class="v">${n(b.output)}</div></div>
+  <div class="card"><div class="k">api-equivalent</div><div class="v">${hasBilling ? `$${a.spendUsd.toFixed(2)}<small> list price${coverage.status === 'partial' ? ' · measured subtotal' : ''}</small>` : 'unknown'}</div></div>
+  <div class="card"><div class="k">cache reads <small>0.1×</small></div><div class="v">${hasBilling ? n(b.cacheRead) : 'unknown'}</div></div>
+  <div class="card"><div class="k">cache writes <small>1.25× / 2×</small></div><div class="v">${hasBilling ? n(b.cacheWrite5m + b.cacheWrite1h) : 'unknown'}</div></div>
+  <div class="card"><div class="k">output</div><div class="v">${hasBilling ? n(b.output) : 'unknown'}</div></div>
 </div>
-<div class="note">Read from your transcripts, including the 5-minute / 1-hour cache-write split, so each write is priced at its own multiplier. The dollar figure is the <strong>list-price value of these tokens</strong>, not a bill — on a subscription plan you did not pay it.${
-    a.unknownModels.length
+<div class="note">${coverage.status === 'full'
+    ? 'Read from your transcripts, including the 5-minute / 1-hour cache-write split, so each write is priced at its own multiplier.'
+    : coverage.status === 'partial'
+      ? `Measured subtotal from <strong>${coverage.knownTurns}/${coverage.totalTurns} turns</strong> with compatible usage telemetry.`
+      : `Usage is unknown: <strong>${coverage.knownTurns}/${coverage.totalTurns} turns</strong> have compatible usage telemetry.`}
+${hasBilling ? 'The dollar figure is the <strong>list-price value of these measured tokens</strong>, not a bill — on a subscription plan you did not pay it.' : 'No token or dollar zero is inferred from the missing fields.'}${
+    hasBilling && a.unknownModels.length
       ? ` <strong style="color:var(--amber)">Partly estimated:</strong> ${a.unknownModels.length} model${a.unknownModels.length === 1 ? '' : 's'} in these transcripts have no known rate and were priced at a fallback (${esc(a.unknownModels.slice(0, 4).join(', '))}). Treat the total as an estimate, not a reading.`
-      : ' Nothing on this row is estimated.'
+      : coverage.status === 'full' ? ' Nothing on this row is estimated.' : ''
   }</div>
 
 <h2>CONTEXT — WHERE THE ALWAYS-ON PREFIX GOES</h2>
-${flamegraph(a)}
-<div class="note">Median first-turn prompt is <strong>${n(a.medianPrefixTokens)} tokens</strong> — an <strong>upper bound</strong> on the resident prefix, because it also contains the opening user message, which the billed totals do not let us separate out. At ${a.medianTurnsPerSession} turns per session, prompt caching makes that prefix <strong>${ratio.toFixed(1)}× cheaper</strong> than the tokens-×-turns figure quoted everywhere else — but not as cheap as the usual write-once model claims: this corpus writes the prefix <strong>${a.medianPrefixWrites}×</strong> per session at the <strong>${a.cacheTtl}</strong> rate, because cache entries expire and compaction rebuilds the prompt. That count is measured per session, not assumed. The <strong>unattributed remainder</strong> is what we measured but cannot tie to a harness file. It is not a single thing: Claude Code's own system prompt and MCP tool schemas are in there, and so is the opening user message and anything else injected into that turn. We do not report a breakdown of it, because we have not measured one.</div>
+${hasPrefix ? flamegraph(a) : '<div class="card"><div class="k">first-turn prompt / cache behavior</div><div class="v">unknown</div></div>'}
+<div class="note">${hasPrefix && ratio !== undefined
+    ? `Median first-turn prompt is <strong>${n(a.medianPrefixTokens)} tokens</strong> — an <strong>upper bound</strong> on the resident prefix, because it also contains the opening user message, which the billed totals do not let us separate out. At ${a.medianTurnsPerSession} turns per session, prompt caching makes that prefix <strong>${ratio.toFixed(1)}× cheaper</strong> than the tokens-×-turns figure quoted everywhere else — but not as cheap as the usual write-once model claims: this corpus writes the prefix <strong>${a.medianPrefixWrites}×</strong> per session at the <strong>${a.cacheTtl}</strong> rate, because cache entries expire and compaction rebuilds the prompt. That count is measured per session, not assumed. The <strong>unattributed remainder</strong> is what we measured but cannot tie to a harness file. It is not a single thing: Claude Code's own system prompt and MCP tool schemas are in there, and so is the opening user message and anything else injected into that turn. We do not report a breakdown of it, because we have not measured one.${coverage.status === 'partial' ? ` Prefix/cache medians use ${coverage.cacheSessions}/${a.sessionCount} complete sessions.` : ''}`
+    : 'First-turn prompt, cache writes, cache TTL, prompt-cache ratio and unattributed remainder are <strong>unknown</strong>: no session has complete compatible usage telemetry. Harness-file sizes remain estimates.'}</div>
 
 <h2>DEAD SHARE</h2>
 <div class="card"><div class="k">of attributed harness context, with no observable consequence</div>
 <div class="v" style="color:${a.deadSharePct > 50 ? 'var(--rust)' : a.deadSharePct > 25 ? 'var(--amber)' : 'var(--green)'}">${a.deadSharePct.toFixed(0)}%<small> of ${n(a.harnessEstTokens)} tok</small></div></div>
-<div class="note">This percentage is scoped to the context we can attribute to a file — ${n(a.harnessEstTokens)} tokens, or ${a.medianPrefixTokens > 0 ? ((a.harnessEstTokens / a.medianPrefixTokens) * 100).toFixed(0) : '0'}% of your ${n(a.medianPrefixTokens)}-token prefix. The remaining ${n(a.residualTokens)} tokens are unattributed — harnessmeter cannot tie them to a file or see inside them, so they are <strong>not</strong> counted as either live or dead. Reporting one number as if it covered the whole prefix would be the exact error this tool exists to correct.</div>
+<div class="note">${hasPrefix
+    ? `This percentage is scoped to the context we can attribute to a file — ${n(a.harnessEstTokens)} tokens, or ${a.medianPrefixTokens > 0 ? ((a.harnessEstTokens / a.medianPrefixTokens) * 100).toFixed(0) : '0'}% of your ${n(a.medianPrefixTokens)}-token prefix. The remaining ${n(a.residualTokens)} tokens are unattributed — harnessmeter cannot tie them to a file or see inside them, so they are <strong>not</strong> counted as either live or dead. Reporting one number as if it covered the whole prefix would be the exact error this tool exists to correct.`
+    : `This percentage is scoped only to the estimated ${n(a.harnessEstTokens)} tokens attributable to harness files. Their share of the prefix and the unattributed remainder are <strong>unknown</strong>.`}</div>
 <div class="note"><strong>Resolution.</strong> ${a.evidenceFloorSessions} of the ${n(a.sessionCount)} session${a.sessionCount === 1 ? '' : 's'} read can testify about this project's claims, so one that never fired can only be shown to load less than <strong>${a.evidenceFloorPct < 10 ? a.evidenceFloorPct.toFixed(1) : a.evidenceFloorPct.toFixed(0)}%</strong> of the time, at 95% confidence. ${a.evidenceFloorPct > 50 ? 'That is too thin to condemn anything: a quiet corpus and a clean harness produce the same zero, and this one is quiet. Rerun with <code>--all</code>, or come back after more sessions.' : 'Below that, silence is a measurement rather than an absence of one.'}</div>
 
 <h2>LEASE LEDGER</h2>
@@ -208,16 +228,19 @@ ${proposals(a)}
 <h2>BALANCE</h2>
 <div class="bal">
   <div><span>tiers reached</span><strong>${a.cost.tier}</strong></div>
-  <div><span>analysis cost</span><strong style="color:${a.cost.tokens > 0 ? 'var(--amber)' : 'var(--green)'}">${a.cost.tokens > 0 ? `${n(a.cost.tokens)} tokens · $${a.cost.usd.toFixed(3)}` : '0 tokens'}</strong></div>
-  ${a.cost.tokens > 0 ? `<div><span>claims judged at T2</span><strong>${a.cost.judged ?? 0} <small style="color:var(--dim)">via ${esc(a.cost.model ?? '')}, your own quota</small></strong></div>` : '<div><span>network calls</span><strong style="color:var(--green)">0</strong></div>'}
-  <div><span>proposals would save</span><strong style="color:var(--green)">${saved > 0 ? '~' + n(saved) + ' eff tok / session' : '—'}</strong></div>
-  ${a.cost.tokens > 0 && saved > 0 ? `<div><span>payback</span><strong style="color:var(--green)">${a.cost.tokens / saved < 1 ? 'first session' : '~' + Math.ceil(a.cost.tokens / saved) + ' sessions'}</strong></div>` : ''}
+  <div><span>analysis cost</span><strong style="color:${a.cost.attempts > 0 ? 'var(--amber)' : 'var(--green)'}">${a.cost.attempts === 0 ? '0 tokens <small>(no model call, no network)</small>' : `${a.cost.tokens === null ? 'unknown tokens' : n(a.cost.tokens) + ' tokens'} · ${a.cost.usd === null ? 'cost unknown' : '$' + a.cost.usd.toFixed(3)}`}</strong></div>
+  ${a.cost.attempts > 0 ? `<div><span>agent attempts</span><strong>${a.cost.attempts} attempt${a.cost.attempts === 1 ? '' : 's'} · ${a.cost.calls} successful response${a.cost.calls === 1 ? '' : 's'}<small style="color:var(--dim)"> · model calls ${a.cost.modelCalls === null ? 'unknown' : n(a.cost.modelCalls)} · network calls unknown</small></strong></div>` : '<div><span>network calls</span><strong style="color:var(--green)">0</strong></div>'}
+  ${a.cost.attempts > 0 && a.cost.tokens === null && a.cost.tokenResponses > 0 ? `<div><span>measured subtotal</span><strong>${n(a.cost.measuredTokens)} tokens <small style="color:var(--dim)">(${a.cost.tokenResponses}/${a.cost.calls} responses)</small></strong></div>` : ''}
+  ${a.cost.attempts > 0 && a.cost.usd === null && a.cost.costResponses > 0 ? `<div><span>measured subtotal</span><strong>$${a.cost.measuredCostUsd.toFixed(3)} <small style="color:var(--dim)">(${a.cost.costResponses}/${a.cost.calls} responses)</small></strong></div>` : ''}
+  ${a.cost.attempts > 0 ? `<div><span>claims judged at T2</span><strong>${a.cost.judged ?? 0} <small style="color:var(--dim)">via ${esc(a.cost.model ?? '')}, your own quota</small></strong></div>` : ''}
+  <div><span>proposals would save</span><strong style="color:${coverage.cacheSessions === 0 ? 'var(--amber)' : 'var(--green)'}">${coverage.cacheSessions === 0 ? 'saving unknown' : saved > 0 ? '~' + n(saved) + ' eff tok / session' : '—'}</strong></div>
+  ${coverage.cacheSessions > 0 && a.cost.tokens !== null && a.cost.tokens > 0 && saved > 0 ? `<div><span>payback</span><strong style="color:var(--green)">${a.cost.tokens / saved < 1 ? 'first session' : '~' + Math.ceil(a.cost.tokens / saved) + ' sessions'}</strong></div>` : ''}
 </div>
 
 <footer>
 harnessmeter ${VERSION} · evidence tiers reached in this run: ${a.cost.tier === 'T0/T1/T2' ? 'T0 (presence), T1 (consequence), T2 (judgement)' : 'T0 (presence), T1 (consequence) — run with <code>--t2</code> to escalate unproven claims'}.
 T3 natural experiments and T4 field randomisation are not in this release.<br>
-Session-level figures are exact. Per-claim token counts are calibrated estimates at
+${coverage.status === 'full' ? 'Session-level figures are exact.' : coverage.status === 'partial' ? `Session-level figures are a measured subtotal covering ${coverage.knownTurns}/${coverage.totalTurns} turns.` : 'Session-level token, cost and cache figures are unknown.'} Per-claim token counts are calibrated estimates at
 ~3.8 chars/token and are labelled as such wherever shown.
 </footer>
 </main></body></html>`;

@@ -12,14 +12,93 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { encodeCwd, findProjectDir, readSession } from '../src/transcript.ts';
+import { encodeCwd, findProjectDir, readSession, readUsage } from '../src/transcript.ts';
 import { ask, extractJson } from '../src/agent.ts';
+
+function fakeAgentResult(kind: 'claude' | 'codex', stdout: string) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hm-agent-result-'));
+  const name = `hm-agent-${process.pid}-${Math.random().toString(36).slice(2, 8)}`;
+  const script = path.join(root, 'agent.mjs');
+  fs.writeFileSync(script, `process.stdout.write(${JSON.stringify(stdout)});\n`);
+  if (process.platform === 'win32') {
+    fs.writeFileSync(path.join(root, `${name}.cmd`), `@echo off\r\n"${process.execPath}" "${script}" %*\r\n`);
+  } else {
+    const shim = path.join(root, name);
+    fs.writeFileSync(shim, `#!/bin/sh\nexec "${process.execPath}" "${script}" "$@"\n`);
+    fs.chmodSync(shim, 0o755);
+  }
+  const previousPath = process.env.PATH;
+  process.env.PATH = `${root}${path.delimiter}${previousPath ?? ''}`;
+  return {
+    agent: { kind, bin: name } as const,
+    cleanup() {
+      if (previousPath === undefined) delete process.env.PATH;
+      else process.env.PATH = previousPath;
+      fs.rmSync(root, { recursive: true, force: true });
+    },
+  };
+}
 
 function fixture(lines: unknown[]): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hm-'));
   const file = path.join(dir, 'session.jsonl');
   fs.writeFileSync(file, lines.map((l) => (typeof l === 'string' ? l : JSON.stringify(l))).join('\n'));
   return file;
+}
+
+function rawFixture(parts: readonly (string | Buffer)[]): { file: string; cleanup: () => void } {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hm-stream-'));
+  const file = path.join(dir, 'session.jsonl');
+  const fd = fs.openSync(file, 'w');
+  try {
+    for (const part of parts) {
+      if (typeof part === 'string') fs.writeSync(fd, part);
+      else fs.writeSync(fd, part);
+    }
+  } finally {
+    fs.closeSync(fd);
+  }
+  return {
+    file,
+    cleanup: () => fs.rmSync(dir, { recursive: true, force: true }),
+  };
+}
+
+const STREAM_CHUNK_BYTES = 1 << 20;
+const MAX_TEST_CANDIDATE_BYTES = 16 * 1024 * 1024;
+
+function assistantLineOfBytes(totalBytes: number, id: string, cwd = '/tmp/project'): Buffer {
+  const prefix =
+    `{"type":"assistant","sessionId":"s1","cwd":${JSON.stringify(cwd)},` +
+    `"message":{"id":${JSON.stringify(id)},"model":"claude-opus-5",` +
+    '"usage":{"input_tokens":7,"cache_read_input_tokens":0,' +
+    '"cache_creation_input_tokens":0,"output_tokens":3},' +
+    '"content":[{"type":"text","text":"';
+  const suffix = '"}]}}';
+  const padding = totalBytes - Buffer.byteLength(prefix) - Buffer.byteLength(suffix);
+  assert.ok(padding >= 0, 'requested line is large enough for the JSON envelope');
+  const line = Buffer.from(prefix + 'x'.repeat(padding) + suffix);
+  assert.equal(line.length, totalBytes);
+  return line;
+}
+
+async function countBufferConcats<T>(fn: () => Promise<T>): Promise<{ result: T; calls: number }> {
+  const descriptor = Object.getOwnPropertyDescriptor(Buffer, 'concat');
+  assert.ok(descriptor);
+  const original = Buffer.concat;
+  let calls = 0;
+  Object.defineProperty(Buffer, 'concat', {
+    ...descriptor,
+    value: (...args: Parameters<typeof Buffer.concat>) => {
+      calls++;
+      return original(...args);
+    },
+  });
+  try {
+    return { result: await fn(), calls };
+  } finally {
+    Object.defineProperty(Buffer, 'concat', descriptor);
+  }
 }
 
 const assistant = (usage: Record<string, unknown>, content: unknown[] = []) => ({
@@ -61,6 +140,80 @@ test('falls back to the conservative 5m rate when the split is absent', async ()
   // Charging an unknown write at 2x would overstate; 1.25x is the honest floor.
   assert.equal(s.turns[0].usage.cacheWrite5m, 900);
   assert.equal(s.turns[0].usage.cacheWrite1h, 0);
+});
+
+test('keeps tools from an assistant entry with an incompatible usage schema', async () => {
+  const file = fixture([
+    assistant({ prompt_tokens: 123, completion_tokens: 7 }, [
+      { type: 'tool_use', name: 'Read', input: {} },
+    ]),
+  ]);
+  const s = await readSession(file, 'proj');
+  assert.ok(s);
+  assert.equal(s.turns.length, 1);
+  assert.equal(s.turns[0].usageKnown, false);
+  assert.deepEqual(s.turns[0].tools, ['Read']);
+  assert.deepEqual(s.turns[0].usage, {
+    inputTokens: 0,
+    cacheReadTokens: 0,
+    cacheWrite5m: 0,
+    cacheWrite1h: 0,
+    outputTokens: 0,
+  });
+});
+
+test('keeps an assistant entry with absent usage and marks it unknown', async () => {
+  const entry = assistant({}, [{ type: 'tool_use', name: 'Edit', input: {} }]) as any;
+  delete entry.message.usage;
+  const s = await readSession(fixture([entry]), 'proj');
+  assert.ok(s);
+  assert.equal(s.turns[0].usageKnown, false);
+  assert.deepEqual(s.turns[0].tools, ['Edit']);
+});
+
+test('a supported Claude usage key with an explicit zero is known', async () => {
+  const s = await readSession(fixture([assistant({ input_tokens: 0 })]), 'proj');
+  assert.ok(s);
+  assert.equal(s.turns[0].usageKnown, true);
+});
+
+test('usage metrics must be finite non-negative numbers, not merely present keys', () => {
+  const invalid = [
+    { input_tokens: '500', output_tokens: '20' },
+    { input_tokens: null },
+    { input_tokens: -1 },
+    { input_tokens: Number.NaN },
+    { input_tokens: Number.POSITIVE_INFINITY },
+    { cache_creation: null },
+    { cache_creation: [] },
+    { cache_creation: { ephemeral_5m_input_tokens: '500' } },
+    { cache_creation: { ephemeral_1h_input_tokens: -1 } },
+    { cache_creation: {} },
+  ];
+  for (const raw of invalid) {
+    const parsed = readUsage(raw);
+    assert.equal(parsed.known, false, `accepted ${JSON.stringify(raw)}`);
+    assert.deepEqual(parsed.usage, {
+      inputTokens: 0,
+      cacheReadTokens: 0,
+      cacheWrite5m: 0,
+      cacheWrite1h: 0,
+      outputTokens: 0,
+    });
+  }
+});
+
+test('nested cache metric zero is a valid explicit measurement', () => {
+  assert.equal(readUsage({ cache_creation: { ephemeral_5m_input_tokens: 0 } }).known, true);
+  assert.equal(readUsage({ cache_creation: { ephemeral_1h_input_tokens: 0 } }).known, true);
+});
+
+test('an explicitly synthetic zero-usage turn remains known', async () => {
+  const entry = assistant({ output_tokens: 0 }) as any;
+  entry.message.model = '<synthetic>';
+  const s = await readSession(fixture([entry]), 'proj');
+  assert.ok(s);
+  assert.equal(s.turns[0].usageKnown, true);
 });
 
 test('first-turn prompt size is the measured always-on prefix', async () => {
@@ -192,6 +345,59 @@ test('a shell call with no command string yields no command', async () => {
 });
 
 // ── agent process failures ──────────────────────────────────────────────────────────
+
+test('Claude keeps absent or incomplete billing telemetry unknown', async () => {
+  const cases = [
+    { payload: { result: 'ok' }, cost: undefined, usage: undefined },
+    {
+      payload: { result: 'ok', total_cost_usd: -1, usage: { input_tokens: 1, output_tokens: 1 } },
+      cost: undefined,
+      usage: { inputTokens: 1, cacheReadTokens: 0, cacheWriteTokens: 0, outputTokens: 1 },
+    },
+    { payload: { result: 'ok', total_cost_usd: 0.2, usage: { input_tokens: 1 } }, cost: 0.2, usage: undefined },
+    {
+      payload: { result: 'ok', usage: { input_tokens: 1, output_tokens: 1, cache_read_input_tokens: '0' } },
+      cost: undefined,
+      usage: undefined,
+    },
+  ];
+  for (const { payload, cost, usage } of cases) {
+    const fake = fakeAgentResult('claude', JSON.stringify(payload));
+    try {
+      const result = await ask(fake.agent, 'x');
+      assert.equal(result.costUsd, cost);
+      assert.deepEqual(result.usage, usage);
+    } finally {
+      fake.cleanup();
+    }
+  }
+});
+
+test('Claude preserves an explicitly measured zero usage and cost', async () => {
+  const fake = fakeAgentResult('claude', JSON.stringify({
+    result: 'ok',
+    total_cost_usd: 0,
+    usage: { input_tokens: 0, output_tokens: 0 },
+  }));
+  try {
+    assert.deepEqual(await ask(fake.agent, 'x'), {
+      text: 'ok',
+      costUsd: 0,
+      usage: { inputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, outputTokens: 0 },
+    });
+  } finally {
+    fake.cleanup();
+  }
+});
+
+test('Codex success text does not manufacture billing telemetry', async () => {
+  const fake = fakeAgentResult('codex', '{"verdicts":[]}');
+  try {
+    assert.deepEqual(await ask(fake.agent, 'x'), { text: '{"verdicts":[]}' });
+  } finally {
+    fake.cleanup();
+  }
+});
 
 test('asking with no agent installed fails loudly rather than silently', async () => {
   await assert.rejects(
@@ -494,6 +700,22 @@ test('tool calls spread across the entries are all kept', async () => {
   assert.deepEqual(s.turns[0].commands, ['npm test']);
 });
 
+test('a later compatible block upgrades an unknown folded response without double billing', async () => {
+  const s = await readSession(
+    fixture([
+      blocks('msg_1', { prompt_tokens: 999 }, [{ type: 'tool_use', name: 'Read', input: {} }]),
+      blocks('msg_1', USAGE, [{ type: 'tool_use', name: 'Edit', input: {} }]),
+    ]),
+    'proj',
+  );
+  assert.ok(s);
+  assert.equal(s.turns.length, 1);
+  assert.equal(s.turns[0].usageKnown, true);
+  assert.equal(s.turns[0].usage.cacheReadTokens, 50_000);
+  assert.deepEqual(s.turns[0].tools, ['Read', 'Edit']);
+  assert.equal(s.firstTurnPromptTokens, 50_410);
+});
+
 test('distinct responses stay distinct', async () => {
   const s = await readSession(
     fixture([blocks('msg_1', USAGE, [{ type: 'text' }]), blocks('msg_2', USAGE, [{ type: 'text' }])]),
@@ -625,4 +847,90 @@ test('multi-byte characters survive the byte-level split', async () => {
   assert.ok(s);
   assert.equal(s.cwd, '/home/u/caf\u00e9-\u65e5\u672c\u8a9e');
   assert.deepEqual(s.turns[0].commands, ['echo caf\u00e9 \u2014 \u65e5\u672c\u8a9e']);
+});
+
+test('a 15 MiB candidate is concatenated once, preserves split UTF-8, and resumes at EOF', async () => {
+  const cwdPrefix = '{"type":"assistant","sessionId":"s1","cwd":"';
+  const cwd =
+    'c'.repeat(STREAM_CHUNK_BYTES - 1 - Buffer.byteLength(cwdPrefix)) + '\u00e9';
+  const first = assistantLineOfBytes(15 * 1024 * 1024, 'msg_15m', cwd);
+  // The first byte of é is the last byte of the first stream chunk.
+  assert.equal(first[STREAM_CHUNK_BYTES - 1], 0xc3);
+  assert.equal(first[STREAM_CHUNK_BYTES], 0xa9);
+  const next = JSON.stringify(
+    assistant({ input_tokens: 2, cache_read_input_tokens: 0, output_tokens: 1 }),
+  );
+  const f = rawFixture([first, '\n', next]);
+  try {
+    const measured = await countBufferConcats(() => readSession(f.file, 'proj'));
+    assert.ok(measured.result);
+    assert.equal(measured.result.turns.length, 2);
+    assert.equal(measured.result.cwd, cwd);
+    assert.ok(measured.calls <= 1, `candidate used ${measured.calls} Buffer.concat calls`);
+  } finally {
+    f.cleanup();
+  }
+});
+
+test('a candidate over 16 MiB is discarded without losing the following line', async () => {
+  const oversized = assistantLineOfBytes(MAX_TEST_CANDIDATE_BYTES + 1, 'msg_too_large');
+  const next = JSON.stringify(
+    assistant({ input_tokens: 11, cache_read_input_tokens: 0, output_tokens: 1 }),
+  );
+  const f = rawFixture([oversized, '\n', next]);
+  try {
+    const s = await readSession(f.file, 'proj');
+    assert.ok(s);
+    assert.equal(s.turns.length, 1);
+    assert.equal(s.turns[0].usage.inputTokens, 11);
+  } finally {
+    f.cleanup();
+  }
+});
+
+test('a candidate exactly at 16 MiB remains accepted', async () => {
+  const exact = assistantLineOfBytes(MAX_TEST_CANDIDATE_BYTES, 'msg_at_limit');
+  const f = rawFixture([exact]);
+  try {
+    const s = await readSession(f.file, 'proj');
+    assert.ok(s);
+    assert.equal(s.turns.length, 1);
+    assert.equal(s.turns[0].usage.inputTokens, 7);
+  } finally {
+    f.cleanup();
+  }
+});
+
+test('an enormous noncandidate uses no concat, then CRLF and EOF records survive', async () => {
+  const next = JSON.stringify(
+    assistant({ input_tokens: 13, cache_read_input_tokens: 0, output_tokens: 1 }),
+  );
+  const f = rawFixture([Buffer.alloc(10 * 1024 * 1024, 0x6e), '\r\n', next]);
+  try {
+    const measured = await countBufferConcats(() => readSession(f.file, 'proj'));
+    assert.ok(measured.result);
+    assert.equal(measured.result.turns.length, 1);
+    assert.equal(measured.result.turns[0].usage.inputTokens, 13);
+    assert.equal(measured.calls, 0, 'discarded noncandidate bytes must never be concatenated');
+  } finally {
+    f.cleanup();
+  }
+});
+
+test('long lines use only their first KiB to decide candidacy', async () => {
+  const early = assistantLineOfBytes(12 * 1024, 'msg_early');
+  const latePrefix = '{"padding":"' + 'p'.repeat(1500) + '","type":"assistant","message":';
+  const lateSuffix = '{"model":"claude-opus-5","usage":{"input_tokens":99},"content":[]}}';
+  const latePadding = 9 * 1024 * 1024 - Buffer.byteLength(latePrefix) - Buffer.byteLength(lateSuffix);
+  const late = Buffer.from(latePrefix + 'q'.repeat(latePadding) + lateSuffix);
+  assert.ok(late.indexOf(Buffer.from('"assistant"')) > 1024);
+  const f = rawFixture([early, '\n', late]);
+  try {
+    const s = await readSession(f.file, 'proj');
+    assert.ok(s);
+    assert.equal(s.turns.length, 1);
+    assert.equal(s.turns[0].usage.inputTokens, 7);
+  } finally {
+    f.cleanup();
+  }
 });

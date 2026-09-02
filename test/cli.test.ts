@@ -34,7 +34,7 @@ const encodeCwdIndependently = (p: string) => p.replace(/[^A-Za-z0-9]/g, '-');
  */
 const BIN = fileURLToPath(new URL('../src/cli.ts', import.meta.url));
 
-type Fixture = { home: string; cwd: string; cleanup: () => void };
+type Fixture = { home: string; cwd: string; mine: string; other: string; cleanup: () => void };
 
 /**
  * Two projects with different work: the one we run in prescribes `npm test` and does it,
@@ -91,17 +91,47 @@ function fixture(opts: { otherSessions?: number; projectRule?: string; userRule?
     `# Shell\n\n${opts.userRule ?? 'Always run npm test before committing.'}\n`,
   );
 
-  return { home, cwd, cleanup: () => fs.rmSync(root, { recursive: true, force: true }) };
+  return { home, cwd, mine, other, cleanup: () => fs.rmSync(root, { recursive: true, force: true }) };
 }
 
-function run(f: Fixture, args: string[]): any {
+function run(f: Fixture, args: string[], env: NodeJS.ProcessEnv = {}): any {
   const out = execFileSync(process.execPath, [BIN, ...args, '--json', '--no-html'], {
     cwd: f.cwd,
-    env: { ...process.env, CLAUDE_HOME: f.home, NO_COLOR: '1' },
+    env: { ...process.env, ...env, CLAUDE_HOME: f.home, NO_COLOR: '1' },
     encoding: 'utf8',
     maxBuffer: 32 * 1024 * 1024,
   });
   return JSON.parse(out);
+}
+
+function fakeClaudeAgent(root: string): { bin: string; capture: string } {
+  const bin = path.join(root, 'bin');
+  const capture = path.join(root, 'prompts.jsonl');
+  const script = path.join(root, 'fake-agent.mjs');
+  fs.mkdirSync(bin, { recursive: true });
+  fs.writeFileSync(
+    script,
+    `import fs from 'node:fs';
+let prompt = '';
+process.stdin.setEncoding('utf8');
+process.stdin.on('data', (chunk) => { prompt += chunk; });
+process.stdin.on('end', () => {
+  fs.appendFileSync(process.env.HM_PROMPT_CAPTURE, JSON.stringify(prompt) + '\\n');
+  const verdicts = [...prompt.matchAll(/<rule id="([^"]+)">/g)].map((m) => ({
+    id: m[1], outcome: 'unjudgeable', confidence: 'medium', why: 'fixture',
+  }));
+  process.stdout.write(JSON.stringify({ result: JSON.stringify({ verdicts }), usage: {} }));
+});
+`,
+  );
+  if (process.platform === 'win32') {
+    fs.writeFileSync(path.join(bin, 'claude.cmd'), `@echo off\r\n"${process.execPath}" "${script}" %*\r\n`);
+  } else {
+    const shim = path.join(bin, 'claude');
+    fs.writeFileSync(shim, `#!/bin/sh\nexec "${process.execPath}" "${script}" "$@"\n`);
+    fs.chmodSync(shim, 0o755);
+  }
+  return { bin, capture };
 }
 
 const byScope = (a: any, scope: 'project' | 'user') =>
@@ -163,6 +193,36 @@ test('without --all only the current project is read', () => {
   }
 });
 
+test('a corpus with only incompatible usage remains analyzable and reports telemetry none', () => {
+  const f = fixture({ otherSessions: 0 });
+  try {
+    fs.writeFileSync(
+      path.join(f.mine, 'a.jsonl'),
+      JSON.stringify({
+        type: 'assistant',
+        message: {
+          model: 'codex-unknown-schema',
+          usage: { input_tokens: '500', output_tokens: '20' },
+          content: [{ type: 'tool_use', name: 'Bash', input: { command: 'npm test' } }],
+        },
+      }),
+    );
+    const a = run(f, []);
+    assert.equal(a.sessionCount, 1);
+    assert.equal(a.turnCount, 1);
+    assert.deepEqual(a.telemetryCoverage, {
+      knownTurns: 0,
+      totalTurns: 1,
+      prefixSessions: 0,
+      cacheSessions: 0,
+      status: 'none',
+    });
+    assert.equal(byScope(a, 'project').length > 0, true);
+  } finally {
+    f.cleanup();
+  }
+});
+
 test('a machine with no transcripts exits 1 with guidance rather than a stack trace', () => {
   const empty = fs.mkdtempSync(path.join(os.tmpdir(), 'hm-empty-'));
   try {
@@ -195,6 +255,50 @@ test('T2 does not send anything without consent on a non-TTY', () => {
     // In every case nothing may be spent without an explicit yes.
     assert.equal(a.cost.usd, 0);
     assert.equal(a.cost.tokens, 0);
+  } finally {
+    f.cleanup();
+  }
+});
+
+test('--all gives each T2 batch only the sessions eligible for its claims', () => {
+  const f = fixture({
+    otherSessions: 18,
+    projectRule: 'Keep answers concise and clear.',
+    userRule: 'Use a calm and direct tone in every response to the user.',
+  });
+  try {
+    const changedAt = Date.now() - 5 * 24 * 60 * 60 * 1000;
+    const entry = (tool: string, timestamp: number) =>
+      JSON.stringify({
+        type: 'assistant',
+        timestamp: new Date(timestamp).toISOString(),
+        message: {
+          model: 'claude-opus-5',
+          usage: { input_tokens: 5, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, output_tokens: 1 },
+          content: [{ type: 'tool_use', name: tool, input: {} }],
+        },
+      });
+    const recent = path.join(f.mine, 'recent.jsonl');
+    const old = path.join(f.mine, 'old.jsonl');
+    fs.writeFileSync(recent, entry('RecentProjectTool', changedAt + 24 * 60 * 60 * 1000));
+    fs.writeFileSync(old, entry('OldProjectTool', changedAt - 24 * 60 * 60 * 1000));
+    fs.rmSync(path.join(f.mine, 'a.jsonl'));
+    fs.utimesSync(path.join(f.cwd, 'CLAUDE.md'), changedAt / 1000, changedAt / 1000);
+
+    const fake = fakeClaudeAgent(path.dirname(f.home));
+    run(f, ['--all', '--t2', '--yes'], {
+      PATH: `${fake.bin}${path.delimiter}${process.env.PATH ?? ''}`,
+      HM_PROMPT_CAPTURE: fake.capture,
+    });
+    const prompts = fs.readFileSync(fake.capture, 'utf8').trim().split('\n').map((line) => JSON.parse(line) as string);
+    const projectPrompt = prompts.find((prompt) => prompt.includes('<rule id="project:'));
+    assert.ok(projectPrompt, 'the project claim was not sent to T2');
+    assert.match(projectPrompt, /"RecentProjectTool": 1/);
+    assert.doesNotMatch(projectPrompt, /OldProjectTool|"Read"/);
+    assert.ok(
+      prompts.every((prompt) => !(prompt.includes('<rule id="project:') && prompt.includes('<rule id="user:'))),
+      'claims with different eligible populations shared a T2 batch',
+    );
   } finally {
     f.cleanup();
   }

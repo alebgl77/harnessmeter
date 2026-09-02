@@ -42,14 +42,25 @@ const GENERIC_DISPATCH = new Set(['Task', 'Agent', 'Skill']);
 
 type ToolWord = { name: string; re: RegExp };
 
+type SessionFact = {
+  session: Session;
+  project: string;
+  endedMs: number;
+  tools: ReadonlySet<string>;
+  commandMask: number;
+  skills: ReadonlySet<string>;
+  mcpServers: ReadonlySet<string>;
+  subagents: ReadonlySet<string>;
+};
+
 function escapeRe(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, (m) => '\\' + m);
 }
 
 /** Every tool name seen in the corpus, plus the seed, compiled once per run. */
-function buildVocab(sessions: Session[]): ToolWord[] {
+function buildVocab(facts: SessionFact[]): ToolWord[] {
   const names = new Set<string>(TOOL_VOCAB_SEED);
-  for (const s of sessions) for (const t of s.turns) for (const n of t.tools) names.add(n);
+  for (const fact of facts) for (const name of fact.tools) names.add(name);
   return [...names]
     .filter((n) => n.length >= 3 && n.length <= 120 && !GENERIC_DISPATCH.has(n))
     .map((name) => ({
@@ -84,10 +95,16 @@ function readClaimBody(claim: Claim): string {
 function checkableSignals(
   body: string,
   vocab: ToolWord[],
-): { tools: string[]; commands: RegExp[] } {
+): { tools: string[]; commandMask: number; commandCount: number } {
   const tools = vocab.filter((t) => t.re.test(body)).map((t) => t.name);
-  const commands = COMMAND_PATTERNS.filter((c) => c.re.test(body)).map((c) => c.probe);
-  return { tools, commands };
+  let commandMask = 0;
+  let commandCount = 0;
+  for (let i = 0; i < COMMAND_PATTERNS.length; i++) {
+    if (!COMMAND_PATTERNS[i].re.test(body)) continue;
+    commandMask |= 1 << i;
+    commandCount++;
+  }
+  return { tools, commandMask, commandCount };
 }
 
 export type EvidenceInput = {
@@ -100,11 +117,11 @@ export type EvidenceInput = {
    * judged against its sessions; without this, `--all` measures a project's CLAUDE.md
    * against other projects' work and manufactures ballast out of irrelevance.
    */
-  currentProject?: string;
+  currentProject?: string | null;
 };
 
 type Index = {
-  sessions: Session[];
+  sessions: SessionFact[];
   /** How many sessions were in scope before the claim's age narrowed it. */
   pool: number;
   skillHits: Map<string, number>;
@@ -117,23 +134,78 @@ type Index = {
  * timestamp. Zero is never excluded: an unknown date is not evidence of an old one.
  */
 function sessionEndedMs(s: Session): number {
-  for (let i = s.turns.length - 1; i >= 0; i--) {
-    const t = s.turns[i].timestamp;
-    if (!t) continue;
-    const ms = Date.parse(t);
-    if (Number.isFinite(ms)) return ms;
-  }
-  return 0;
+  return endedMsFromTurns(s.turns);
 }
 
-function buildIndex(sessions: Session[]): Index {
+function endedMsFromTurns(turns: Session['turns']): number {
+  const timestamp = turns.at(-1)?.timestamp;
+  if (!timestamp) return 0;
+  const ms = Date.parse(timestamp);
+  return Number.isFinite(ms) ? ms : 0;
+}
+
+/**
+ * Materialise every transcript-dependent signal once. Everything below this boundary works
+ * on these facts, so adding claims or scope/age populations cannot re-read turn payloads.
+ */
+function buildSessionFact(session: Session): SessionFact {
+  const turns = session.turns;
+  const tools = new Set<string>();
+  let commandMask = 0;
+  for (const turn of turns) {
+    for (const tool of turn.tools) tools.add(tool);
+    for (const command of turn.commands) {
+      for (let i = 0; i < COMMAND_PATTERNS.length; i++) {
+        if (COMMAND_PATTERNS[i].probe.test(command)) commandMask |= 1 << i;
+      }
+    }
+  }
+  return {
+    session,
+    project: session.project,
+    endedMs: endedMsFromTurns(turns),
+    tools,
+    commandMask,
+    skills: new Set(session.skillsUsed),
+    mcpServers: new Set(session.mcpServersUsed),
+    subagents: new Set(session.subagentsUsed),
+  };
+}
+
+export type EligibleSessions = { sessions: Session[]; pool: number };
+
+export function eligibleSessionsForClaim(
+  claim: Claim,
+  sessions: Session[],
+  currentProject?: string | null,
+): EligibleSessions {
+  const pool =
+    claim.scope === 'user' || currentProject === undefined
+      ? sessions
+      : currentProject === null
+        ? []
+        : sessions.filter((s) => s.project === currentProject);
+  const since = claim.source.modifiedMs;
+  return {
+    sessions:
+      since > 0
+        ? pool.filter((s) => {
+            const ended = sessionEndedMs(s);
+            return ended === 0 || ended >= since;
+          })
+        : pool,
+    pool: pool.length,
+  };
+}
+
+function buildIndex(sessions: SessionFact[]): Index {
   const skillHits = new Map<string, number>();
   const mcpHits = new Map<string, number>();
   const agentHits = new Map<string, number>();
-  for (const s of sessions) {
-    for (const k of s.skillsUsed) skillHits.set(k, (skillHits.get(k) ?? 0) + 1);
-    for (const k of s.mcpServersUsed) mcpHits.set(k, (mcpHits.get(k) ?? 0) + 1);
-    for (const k of s.subagentsUsed) agentHits.set(k, (agentHits.get(k) ?? 0) + 1);
+  for (const fact of sessions) {
+    for (const k of fact.skills) skillHits.set(k, (skillHits.get(k) ?? 0) + 1);
+    for (const k of fact.mcpServers) mcpHits.set(k, (mcpHits.get(k) ?? 0) + 1);
+    for (const k of fact.subagents) agentHits.set(k, (agentHits.get(k) ?? 0) + 1);
   }
   return { sessions, pool: sessions.length, skillHits, mcpHits, agentHits };
 }
@@ -145,10 +217,19 @@ export function runEvidence({
   currentProject,
 }: EvidenceInput): Map<string, ClaimEvidence> {
   const out = new Map<string, ClaimEvidence>();
+  const factBySession = new WeakMap<Session, SessionFact>();
+  const facts = sessions.map((session) => {
+    let fact = factBySession.get(session);
+    if (!fact) {
+      fact = buildSessionFact(session);
+      factBySession.set(session, fact);
+    }
+    return fact;
+  });
 
   // A ~/.claude claim is loaded in every session; a project claim only in its own.
   // Judging each against the wrong population is how false ballast is made.
-  const vocab = buildVocab(sessions);
+  const vocab = buildVocab(facts);
 
   // A plugin skill is labelled plugin:name and attribution may record either form, so the
   // bare name is a useful fallback — but only while it belongs to one skill. When a
@@ -161,15 +242,6 @@ export function runEvidence({
     const bare = n.slice(n.lastIndexOf(':') + 1);
     bareCount.set(bare, (bareCount.get(bare) ?? 0) + 1);
   }
-  const projectSessions = currentProject
-    ? sessions.filter((s) => s.project === currentProject)
-    : sessions;
-
-  // When each session last produced a turn, so a claim is never judged on work that
-  // finished before its text existed.
-  const endedAt = new Map<Session, number>();
-  for (const s of sessions) endedAt.set(s, sessionEndedMs(s));
-
   /**
    * The sessions that could actually have exercised THIS text.
    *
@@ -183,19 +255,21 @@ export function runEvidence({
    */
   const cache = new Map<string, Index>();
   const indexFor = (claim: Claim): Index => {
-    const pool = claim.scope === 'user' ? sessions : projectSessions;
     const since = claim.source.modifiedMs;
     const key = `${claim.scope}:${since}`;
     let idx = cache.get(key);
     if (!idx) {
-      const kept =
+      const pool =
+        claim.scope === 'user' || currentProject === undefined
+          ? facts
+          : currentProject === null
+            ? []
+            : facts.filter((fact) => fact.project === currentProject);
+      const eligible =
         since > 0
-          ? pool.filter((s) => {
-              const ended = endedAt.get(s) ?? 0;
-              return ended === 0 || ended >= since;
-            })
+          ? pool.filter((fact) => fact.endedMs === 0 || fact.endedMs >= since)
           : pool;
-      idx = buildIndex(kept);
+      idx = buildIndex(eligible);
       idx.pool = pool.length;
       cache.set(key, idx);
     }
@@ -269,8 +343,8 @@ export function runEvidence({
       }
       default: {
         // Prose. T1: does it prescribe something we can look for?
-        const { tools, commands } = checkableSignals(body, vocab);
-        if (tools.length === 0 && commands.length === 0) {
+        const { tools, commandMask, commandCount } = checkableSignals(body, vocab);
+        if (tools.length === 0 && commandCount === 0) {
           ev = {
             claimId: claim.id,
             tier: 'none',
@@ -282,22 +356,14 @@ export function runEvidence({
           break;
         }
         let fired = 0;
-        for (const s of idx.sessions) {
-          let hit = false;
-          for (const t of s.turns) {
-            if (tools.length && tools.some((tool) => t.tools.includes(tool))) { hit = true; break; }
-            // Every shell call is named "Bash", so a prescribed command can only be found
-            // in the command line itself.
-            if (commands.length && t.commands.some((c) => commands.some((p) => p.test(c)))) {
-              hit = true;
-              break;
-            }
-          }
-          if (hit) fired++;
+        for (const fact of idx.sessions) {
+          const toolHit = tools.length > 0 && tools.some((tool) => fact.tools.has(tool));
+          const commandHit = commandMask !== 0 && (fact.commandMask & commandMask) !== 0;
+          if (toolHit || commandHit) fired++;
         }
         const checked = [
           tools.length ? `${tools.length} tool name${tools.length === 1 ? '' : 's'}` : '',
-          commands.length ? `${commands.length} command${commands.length === 1 ? '' : 's'}` : '',
+          commandCount ? `${commandCount} command${commandCount === 1 ? '' : 's'}` : '',
         ]
           .filter(Boolean)
           .join(' + ');

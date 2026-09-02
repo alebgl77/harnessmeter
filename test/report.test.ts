@@ -53,6 +53,13 @@ function analysis(over: Partial<Analysis> = {}): Analysis {
     medianTurnsPerSession: 30,
     medianPrefixWrites: 4,
     cacheTtl: '1h',
+    telemetryCoverage: {
+      knownTurns: 90,
+      totalTurns: 90,
+      prefixSessions: 9,
+      cacheSessions: 9,
+      status: 'full',
+    },
     evidenceFloorPct: 28,
     evidenceFloorSessions: 9,
     models: { 'claude-opus-5': 90 },
@@ -60,7 +67,11 @@ function analysis(over: Partial<Analysis> = {}): Analysis {
     evidence,
     proposals: [],
     deadSharePct: 42,
-    cost: { tokens: 0, usd: 0, calls: 0, tier: 'T0/T1' },
+    cost: {
+      tokens: 0, usd: 0, attempts: 0, calls: 0, modelCalls: 0, networkCalls: 0,
+      measuredTokens: 0, measuredCostUsd: 0, tokenResponses: 0, costResponses: 0,
+      tier: 'T0/T1',
+    },
     ...over,
   };
 }
@@ -106,6 +117,61 @@ test('an unpriced model makes the dollar figure an estimate and names it', () =>
 
 test('with every model priced, nothing is labelled an estimate on that row', () => {
   assert.doesNotMatch(renderTerminal(analysis()), /unpriced model/i);
+});
+
+test('partial telemetry is a measured subtotal with explicit coverage in both reports', () => {
+  const a = analysis({
+    telemetryCoverage: {
+      knownTurns: 40,
+      totalTurns: 90,
+      prefixSessions: 3,
+      cacheSessions: 3,
+      status: 'partial',
+    },
+  });
+  for (const rendered of [renderTerminal(a), renderHtml(a)]) {
+    assert.match(rendered, /measured subtotal/i);
+    assert.match(rendered, /40\/90 turns/i);
+    assert.doesNotMatch(rendered, /billed\s*[—-]\s*exact/i);
+  }
+});
+
+test('absent telemetry is shown as unknown, never as a measured zero or exact saving', () => {
+  const c = claim();
+  const a = analysis({
+    spendUsd: 0,
+    billedTokens: { input: 0, cacheRead: 0, cacheWrite5m: 0, cacheWrite1h: 0, output: 0 },
+    medianPrefixTokens: 0,
+    medianTurnsPerSession: 0,
+    medianPrefixWrites: 0,
+    cacheTtl: '5m',
+    telemetryCoverage: {
+      knownTurns: 0,
+      totalTurns: 90,
+      prefixSessions: 0,
+      cacheSessions: 0,
+      status: 'none',
+    },
+    claims: [c],
+    proposals: [{
+      claimId: c.id,
+      label: c.label,
+      action: 'demote',
+      savingPerSession: 0,
+      receipt: {
+        tier: 'T1', sessions: 9, firedIn: 0, class: 'workflow', protected: false,
+        confidence: 'high', confidenceSource: 'zero-hit-bound', boundPct: 28,
+      },
+    }],
+  });
+  for (const rendered of [renderTerminal(a), renderHtml(a)]) {
+    assert.match(rendered, /unknown/i);
+    assert.match(rendered, /0\/90 turns/i);
+    assert.match(rendered, /saving unknown/i);
+    assert.doesNotMatch(rendered, /\$0(?:\.00)?/);
+    assert.doesNotMatch(rendered, /BILLED\s*[—-]\s*EXACT/i);
+    assert.doesNotMatch(rendered, /saves ~0/i);
+  }
 });
 
 // ── HTML escaping ───────────────────────────────────────────────────────────────────
@@ -241,6 +307,7 @@ test('a receipt carries the bound its confidence rests on', () => {
             class: 'workflow',
             protected: false,
             confidence: 'high',
+            confidenceSource: 'zero-hit-bound',
             boundPct: 8.9,
           },
         },
@@ -248,6 +315,34 @@ test('a receipt carries the bound its confidence rests on', () => {
     }),
   );
   assert.match(out, /loads <8\.9% of the time \(95%\)/);
+});
+
+test('T2 receipts name the judge as the confidence source in both reports', () => {
+  const c = claim();
+  const a = analysis({
+    claims: [c],
+    proposals: [{
+      claimId: c.id,
+      label: c.label,
+      action: 'investigate',
+      savingPerSession: 900,
+      receipt: {
+        tier: 'T2',
+        sessions: 18,
+        firedIn: 0,
+        class: 'workflow',
+        protected: false,
+        confidence: 'medium',
+        confidenceSource: 't2-judge',
+        boundPct: 15.3,
+      },
+    }],
+  });
+  for (const rendered of [renderTerminal(a), renderHtml(a)]) {
+    assert.match(rendered, /confidence medium/);
+    assert.match(rendered, /T2 judge/);
+    assert.doesNotMatch(rendered, /confidence high/);
+  }
 });
 
 test('the ratio the reports print is computed from the measured writes', () => {
@@ -265,4 +360,48 @@ test('the ratio the reports print is computed from the measured writes', () => {
   const html = renderHtml(a);
   assert.ok(html.includes(measured.toFixed(1) + '× cheaper'));
   assert.ok(!html.includes(writeOnce.toFixed(1) + '× cheaper'));
+});
+
+test('unknown Codex telemetry never renders as zero or no model call', () => {
+  const a = analysis({ cost: {
+    tokens: null, usd: null, attempts: 1, calls: 1, modelCalls: 1, networkCalls: null,
+    measuredTokens: 0, measuredCostUsd: 0, tokenResponses: 0, costResponses: 0,
+    tier: 'T0/T1/T2', model: 'codex', judged: 0,
+  } });
+  for (const rendered of [renderTerminal(a), renderHtml(a)]) {
+    assert.match(rendered, /unknown/i);
+    assert.match(rendered, /1 attempt/i);
+    assert.match(rendered, /network calls? unknown/i);
+    assert.doesNotMatch(rendered, /no model call/i);
+    const balance = rendered.slice(rendered.indexOf('BALANCE'));
+    assert.doesNotMatch(balance, /analysis cost.{0,120}0 tokens/is);
+  }
+});
+
+test('an explicitly measured zero still shows the T2 call', () => {
+  const a = analysis({ cost: {
+    tokens: 0, usd: 0, attempts: 1, calls: 1, modelCalls: 1, networkCalls: null,
+    measuredTokens: 0, measuredCostUsd: 0, tokenResponses: 1, costResponses: 1,
+    tier: 'T0/T1/T2', model: 'sonnet', judged: 1,
+  } });
+  for (const rendered of [renderTerminal(a), renderHtml(a)]) {
+    assert.match(rendered, /0 tokens/);
+    assert.match(rendered, /\$0\.000/);
+    assert.match(rendered, /1 attempt/);
+    assert.match(rendered, /judged 1 claims|claims judged at T2[\s\S]*1/i);
+    assert.doesNotMatch(rendered, /no model call/i);
+  }
+});
+
+test('partial T2 billing shows measured response subtotals', () => {
+  const a = analysis({ cost: {
+    tokens: null, usd: null, attempts: 2, calls: 2, modelCalls: 2, networkCalls: null,
+    measuredTokens: 5, measuredCostUsd: 0.25, tokenResponses: 1, costResponses: 1,
+    tier: 'T0/T1/T2', model: 'sonnet', judged: 2,
+  } });
+  for (const rendered of [renderTerminal(a), renderHtml(a)]) {
+    assert.match(rendered, /measured subtotal/i);
+    assert.match(rendered, /5 tokens/i);
+    assert.match(rendered, /1\/2 responses/i);
+  }
 });

@@ -131,6 +131,82 @@ test('two imported files sharing a basename both survive scanHarness', () => {
   }
 });
 
+test('one scan snapshots shared memory, imports and settings exactly once', () => {
+  const cwd = tmp('hm-snapshot-project-');
+  const home = tmp('hm-snapshot-home-');
+  const imported = write(cwd, 'shared.md', [
+    '# Imported',
+    'The imported rule is long enough to become a claim and must stay coherent.',
+  ]);
+  const memory = write(cwd, 'CLAUDE.md', [
+    '# First',
+    'The first rule is long enough to become a claim in this deterministic fixture.',
+    '',
+    '# Second',
+    'The second rule is also long enough to become another claim in the same file.',
+    '@shared.md',
+  ]);
+  const installed = path.join(home, 'plugins', 'cache', 'official', 'shared-plugin', '1');
+  write(installed, path.join('skills', 'shared-skill', 'SKILL.md'), [
+    '---',
+    'name: shared-skill',
+    'description: A shared fixture skill.',
+    '---',
+    'The fixture body is long enough to be measured by the scanner.',
+  ]);
+  write(home, path.join('plugins', 'installed_plugins.json'), [
+    JSON.stringify({ plugins: { 'shared-plugin@official': [{ installPath: installed }] } }),
+  ]);
+  const settings = write(home, 'settings.json', [
+    JSON.stringify({
+      enabledPlugins: { 'shared-plugin@official': true },
+      mcpServers: { shared: { command: 'shared' } },
+    }),
+  ]);
+
+  const reads = new Map<string, number>();
+  const previous = process.env.CLAUDE_HOME;
+  process.env.CLAUDE_HOME = home;
+  try {
+    const scan = scanHarness(cwd, {
+      readFile(file) {
+        const absolute = path.resolve(file);
+        reads.set(absolute, (reads.get(absolute) ?? 0) + 1);
+        const bytes = fs.readFileSync(absolute);
+        // If the scanner tried to read the memory again for imports or bodies, the two
+        // versions would be mixed. The per-scan cache must keep using these first bytes.
+        if (absolute === path.resolve(memory)) {
+          fs.writeFileSync(memory, '# Mutated\nThis replacement must not enter the scan.\n', 'utf8');
+        }
+        return bytes;
+      },
+    });
+
+    for (const file of [memory, imported, settings]) {
+      assert.equal(reads.get(path.resolve(file)), 1, `${file} was read more than once`);
+      const snap = scan.snapshot.get(path.resolve(file));
+      assert.ok(snap, `${file} is absent from the snapshot`);
+      assert.equal(snap.path, path.resolve(file));
+      assert.equal(snap.byteLength, Buffer.byteLength(snap.text, 'utf8'));
+      assert.match(snap.sha256, /^[a-f0-9]{64}$/);
+    }
+
+    const second = scan.claims.find((c) => c.label.endsWith('Second'))!;
+    const importedClaim = scan.claims.find((c) => c.label.endsWith('Imported'))!;
+    assert.equal(
+      scan.bodies.get(second.id),
+      '# Second\nThe second rule is also long enough to become another claim in the same file.\n@shared.md',
+    );
+    assert.equal(
+      scan.bodies.get(importedClaim.id),
+      '# Imported\nThe imported rule is long enough to become a claim and must stay coherent.',
+    );
+  } finally {
+    if (previous === undefined) delete process.env.CLAUDE_HOME;
+    else process.env.CLAUDE_HOME = previous;
+  }
+});
+
 test('two sections with the same title get distinct ids', () => {
   const file = write(tmp('hm-id3-'), 'CLAUDE.md', [
     '# Rules',

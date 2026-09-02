@@ -20,6 +20,7 @@
   "scripts": {
     "start": "node bin/harnessmeter.js",
     "test": "node --test \"test/*.test.ts\"",
+    "bench:ci": "node bench/run.ts",
     "typecheck": "tsc --noEmit",
     "build": "tsc -p tsconfig.build.json",
     "prepare": "npm run build"

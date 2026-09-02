@@ -18,6 +18,12 @@ export type TurnUsage = {
 export type Turn = {
   model: string;
   usage: TurnUsage;
+  /**
+   * Whether `usage` came from a transcript schema we understand. Omitted means known for
+   * backward compatibility with turns built before this flag existed; only explicit false
+   * excludes a turn from billing aggregates.
+   */
+  usageKnown?: boolean;
   /** Tool names invoked in this turn, e.g. "Edit", "mcp__chrome-devtools__navigate_page" */
   tools: string[];
   /**
@@ -156,6 +162,10 @@ export type ClaimEvidence = {
   /** Number of sessions in which this claim had an observable consequence. */
   firedIn: number;
   observedIn: number;
+  /** Confidence assigned to this evidence when it did not come from a zero-hit bound. */
+  confidence?: 'high' | 'medium' | 'low';
+  /** Whether confidence came from corpus statistics or the T2 judge. */
+  confidenceSource?: 'zero-hit-bound' | 't2-judge';
   note: string;
 };
 
@@ -171,6 +181,8 @@ export type Proposal = {
     class: ClaimClass;
     protected: boolean;
     confidence: 'high' | 'medium' | 'low';
+    /** The calculation or judge that supplied `confidence`. */
+    confidenceSource: 'zero-hit-bound' | 't2-judge';
     /**
      * For a claim that never fired: the 95% upper bound on how often it really could,
      * given the sessions in scope. The receipt has to carry the strength of its own
@@ -185,6 +197,16 @@ export type Analysis = {
   projects: string[];
   sessionCount: number;
   turnCount: number;
+  /** Which reported telemetry is measured rather than a zero placeholder. */
+  telemetryCoverage: {
+    knownTurns: number;
+    totalTurns: number;
+    /** Complete sessions used for the first-turn prompt median. */
+    prefixSessions: number;
+    /** Complete sessions used for turns, cache-write and TTL medians. */
+    cacheSessions: number;
+    status: 'full' | 'partial' | 'none';
+  };
   /** Exact, from transcripts. */
   spendUsd: number;
   billedTokens: {
@@ -249,9 +271,16 @@ export type Analysis = {
    * agent CLI. Reported so the net-negative claim can be audited rather than asserted.
    */
   cost: {
-    tokens: number;
-    usd: number;
+    tokens: number | null;
+    usd: number | null;
+    attempts: number;
     calls: number;
+    modelCalls: number | null;
+    networkCalls: 0 | null;
+    measuredTokens: number;
+    measuredCostUsd: number;
+    tokenResponses: number;
+    costResponses: number;
     tier: 'T0/T1' | 'T0/T1/T2';
     model?: string;
     judged?: number;

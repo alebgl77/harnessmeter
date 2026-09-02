@@ -122,25 +122,70 @@ function emptyUsage(): TurnUsage {
   };
 }
 
-function readUsage(raw: any): TurnUsage | undefined {
-  if (!raw || typeof raw !== 'object') return undefined;
-  const created = raw.cache_creation ?? {};
-  const total = num(raw.cache_creation_input_tokens);
+const TOP_LEVEL_USAGE_KEYS = [
+  'input_tokens',
+  'cache_read_input_tokens',
+  'cache_creation_input_tokens',
+  'output_tokens',
+] as const;
+
+const CACHE_USAGE_KEYS = [
+  'ephemeral_5m_input_tokens',
+  'ephemeral_1h_input_tokens',
+] as const;
+
+const own = (object: object, key: PropertyKey): boolean =>
+  Object.prototype.hasOwnProperty.call(object, key);
+
+const validMetric = (value: unknown): value is number =>
+  typeof value === 'number' && Number.isFinite(value) && value >= 0;
+
+export function readUsage(raw: unknown): { usage: TurnUsage; known: boolean } {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    return { usage: emptyUsage(), known: false };
+  }
+  const object = raw as Record<string, unknown>;
+  let measured = false;
+  for (const key of TOP_LEVEL_USAGE_KEYS) {
+    if (!own(object, key)) continue;
+    measured = true;
+    if (!validMetric(object[key])) return { usage: emptyUsage(), known: false };
+  }
+
+  let created: Record<string, unknown> = {};
+  if (own(object, 'cache_creation')) {
+    const candidate = object.cache_creation;
+    if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) {
+      return { usage: emptyUsage(), known: false };
+    }
+    created = candidate as Record<string, unknown>;
+    for (const key of CACHE_USAGE_KEYS) {
+      if (!own(created, key)) continue;
+      measured = true;
+      if (!validMetric(created[key])) return { usage: emptyUsage(), known: false };
+    }
+  }
+  if (!measured) return { usage: emptyUsage(), known: false };
+
+  const total = num(object.cache_creation_input_tokens);
   const w5 = num(created.ephemeral_5m_input_tokens);
   const w1 = num(created.ephemeral_1h_input_tokens);
   // Older transcripts omit the TTL split; fall back to the conservative 5m rate.
   const split = w5 + w1;
   return {
-    inputTokens: num(raw.input_tokens),
-    cacheReadTokens: num(raw.cache_read_input_tokens),
-    cacheWrite5m: split > 0 ? w5 : total,
-    cacheWrite1h: split > 0 ? w1 : 0,
-    outputTokens: num(raw.output_tokens),
+    usage: {
+      inputTokens: num(object.input_tokens),
+      cacheReadTokens: num(object.cache_read_input_tokens),
+      cacheWrite5m: split > 0 ? w5 : total,
+      cacheWrite1h: split > 0 ? w1 : 0,
+      outputTokens: num(object.output_tokens),
+    },
+    known: true,
   };
 }
 
 function num(v: unknown): number {
-  return typeof v === 'number' && Number.isFinite(v) ? v : 0;
+  return validMetric(v) ? v : 0;
 }
 
 /**
@@ -169,7 +214,6 @@ type ResponseIndex = Map<string, Turn>;
 const MARK_ASSISTANT = Buffer.from('"assistant"');
 const MARK_ATTRIBUTION = Buffer.from('attribution');
 const NEWLINE = 0x0a;
-const EMPTY = Buffer.alloc(0);
 
 /**
  * How much of a long line is searched for the markers.
@@ -191,6 +235,9 @@ const HEAD_SCAN_BYTES = 1024;
  * scanning them whole costs nothing worth measuring.
  */
 const FULL_SCAN_BYTES = 8 * 1024;
+
+/** Candidate lines larger than this are ignored rather than retained without bound. */
+const MAX_CANDIDATE_LINE_BYTES = 16 * 1024 * 1024;
 
 /**
  * Can this line contribute anything, judged without decoding it?
@@ -223,6 +270,139 @@ function ingestBytes(
   ingestLine(session, buf.toString('utf8', start, end), seen);
 }
 
+type MarkerProbe = {
+  assistant: number;
+  attribution: number;
+  found: boolean;
+};
+
+type StreamingLine = {
+  state: 'prefix' | 'candidate' | 'discard';
+  fragments: Buffer[];
+  length: number;
+  head: MarkerProbe;
+  full: MarkerProbe;
+};
+
+function markerFailureTable(marker: Buffer): number[] {
+  const failure = new Array<number>(marker.length).fill(0);
+  for (let i = 1, matched = 0; i < marker.length; i++) {
+    while (matched > 0 && marker[i] !== marker[matched]) matched = failure[matched - 1];
+    if (marker[i] === marker[matched]) matched++;
+    failure[i] = matched;
+  }
+  return failure;
+}
+
+const ASSISTANT_FAILURE = markerFailureTable(MARK_ASSISTANT);
+const ATTRIBUTION_FAILURE = markerFailureTable(MARK_ATTRIBUTION);
+
+function advanceMarker(
+  marker: Buffer,
+  failure: number[],
+  matched: number,
+  byte: number,
+): number {
+  while (matched > 0 && marker[matched] !== byte) matched = failure[matched - 1];
+  if (marker[matched] === byte) matched++;
+  return matched;
+}
+
+/** Search marker bytes incrementally, including matches split across stream chunks. */
+function scanMarkers(probe: MarkerProbe, buf: Buffer, start: number, end: number): void {
+  if (probe.found) return;
+  for (let i = start; i < end; i++) {
+    probe.assistant = advanceMarker(
+      MARK_ASSISTANT,
+      ASSISTANT_FAILURE,
+      probe.assistant,
+      buf[i],
+    );
+    if (probe.assistant === MARK_ASSISTANT.length) {
+      probe.found = true;
+      return;
+    }
+    probe.attribution = advanceMarker(
+      MARK_ATTRIBUTION,
+      ATTRIBUTION_FAILURE,
+      probe.attribution,
+      buf[i],
+    );
+    if (probe.attribution === MARK_ATTRIBUTION.length) {
+      probe.found = true;
+      return;
+    }
+  }
+}
+
+function newStreamingLine(): StreamingLine {
+  return {
+    state: 'prefix',
+    fragments: [],
+    length: 0,
+    head: { assistant: 0, attribution: 0, found: false },
+    full: { assistant: 0, attribution: 0, found: false },
+  };
+}
+
+function discardStreamingLine(line: StreamingLine): void {
+  line.state = 'discard';
+  line.fragments = [];
+  line.length = 0;
+}
+
+/**
+ * Retain only the undecided prefix or a known candidate. A long noncandidate releases its
+ * prefix as soon as byte 8193 proves that only the first kilobyte matters.
+ */
+function appendStreamingBytes(
+  line: StreamingLine,
+  buf: Buffer,
+  start: number,
+  end: number,
+): void {
+  if (start === end || line.state === 'discard') return;
+
+  const previousLength = line.length;
+  line.length += end - start;
+  line.fragments.push(buf.subarray(start, end));
+
+  if (line.state === 'prefix') {
+    const headBytes = Math.max(0, Math.min(end - start, HEAD_SCAN_BYTES - previousLength));
+    scanMarkers(line.head, buf, start, start + headBytes);
+    const fullBytes = Math.max(0, Math.min(end - start, FULL_SCAN_BYTES - previousLength));
+    scanMarkers(line.full, buf, start, start + fullBytes);
+
+    if (line.head.found) line.state = 'candidate';
+    else if (line.length > FULL_SCAN_BYTES) discardStreamingLine(line);
+  }
+
+  if (line.state === 'candidate' && line.length > MAX_CANDIDATE_LINE_BYTES) {
+    discardStreamingLine(line);
+  }
+}
+
+function ingestStreamingLine(
+  session: Session,
+  line: StreamingLine,
+  seen: ResponseIndex,
+): void {
+  const candidate =
+    line.state === 'candidate' || (line.state === 'prefix' && line.full.found);
+  if (!candidate || line.length < 2) return;
+
+  if (line.fragments.length === 1) {
+    const only = line.fragments[0];
+    ingestBytes(session, only, 0, line.length, seen);
+    return;
+  }
+
+  // The only whole-line allocation in the streaming path, made once and only after the
+  // line is known to be both relevant and within the hard cap.
+  const joined = Buffer.concat(line.fragments, line.length);
+  ingestBytes(session, joined, 0, joined.length, seen);
+}
+
 /** Fold one decoded JSONL line into the session. Shared by both readers. */
 function ingestLine(session: Session, line: string, seen: ResponseIndex): void {
   if (!line.trim()) return;
@@ -241,8 +421,7 @@ function ingestLine(session: Session, line: string, seen: ResponseIndex): void {
 
   if (e.type !== 'assistant' || !e.message) return;
 
-  const usage = readUsage(e.message.usage);
-  if (!usage) return;
+  const { usage, known: usageKnown } = readUsage(e.message.usage);
 
   const tools: string[] = [];
   const commands: string[] = [];
@@ -275,19 +454,30 @@ function ingestLine(session: Session, line: string, seen: ResponseIndex): void {
     // Same billed response, another content block. Take the tool calls, leave the bill.
     already.tools.push(...tools);
     already.commands.push(...commands);
+    // Some exporters attach usage to only one block. Prefer a supported reading if an
+    // earlier block for the same response had no compatible telemetry.
+    if (usageKnown && already.usageKnown === false) {
+      already.usage = usage;
+      already.usageKnown = true;
+      if (session.turns[0] === already) {
+        session.firstTurnPromptTokens =
+          usage.inputTokens + usage.cacheReadTokens + usage.cacheWrite5m + usage.cacheWrite1h;
+      }
+    }
     return;
   }
 
   const turn: Turn = {
     model: String(e.message.model ?? 'unknown'),
     usage,
+    usageKnown,
     tools,
     commands,
     timestamp: typeof e.timestamp === 'string' ? e.timestamp : undefined,
   };
   if (id) seen.set(id, turn);
 
-  if (session.turns.length === 0) {
+  if (session.turns.length === 0 && usageKnown) {
     session.firstTurnPromptTokens =
       usage.inputTokens + usage.cacheReadTokens + usage.cacheWrite5m + usage.cacheWrite1h;
   }
@@ -342,8 +532,8 @@ export async function readSession(file: string, project: string): Promise<Sessio
       start = nl + 1;
     }
   } else {
-    // Manual chunk splitting instead of readline: same bounded memory (one chunk plus
-    // the longest pending line), a fraction of the per-line event overhead.
+    // Manual chunk splitting instead of readline: raw bytes remain sliced into fragments
+    // until a bounded candidate is complete. Noncandidates release their prefix after 8 KiB.
     let stream: fs.ReadStream;
     try {
       // No encoding: chunks arrive as Buffers so the marker test runs before any decode.
@@ -352,22 +542,21 @@ export async function readSession(file: string, project: string): Promise<Sessio
       return undefined;
     }
     try {
-      // Annotated, not inferred: Buffer.concat and Buffer.subarray disagree on the
-      // buffer generic, and the inferred type from EMPTY is the narrower of the two.
-      let carry: Buffer = EMPTY;
+      let line = newStreamingLine();
       for await (const chunk of stream) {
-        const buf = carry.length ? Buffer.concat([carry, chunk as Buffer]) : (chunk as Buffer);
+        const buf = chunk as Buffer;
         let start = 0;
-        for (;;) {
+        while (start < buf.length) {
           const nl = buf.indexOf(NEWLINE, start);
+          const end = nl < 0 ? buf.length : nl;
+          appendStreamingBytes(line, buf, start, end);
           if (nl < 0) break;
-          ingestBytes(session, buf, start, nl, seen);
+          ingestStreamingLine(session, line, seen);
+          line = newStreamingLine();
           start = nl + 1;
         }
-        // Bounded memory: one chunk plus the longest line still waiting for its newline.
-        carry = start < buf.length ? buf.subarray(start) : EMPTY;
       }
-      if (carry.length) ingestBytes(session, carry, 0, carry.length, seen);
+      ingestStreamingLine(session, line, seen);
     } finally {
       stream.close();
     }
@@ -388,6 +577,13 @@ export async function readSession(file: string, project: string): Promise<Sessio
  * A single pass after ingestion, so the two readers share it and cannot drift.
  */
 function measureCache(session: Session): void {
+  if (session.turns.some((t) => t.usageKnown === false)) {
+    // Keep the legacy fields representable, but make the numeric sentinel impossible to
+    // mistake for a measurement. Analysis excludes this session from cache medians.
+    session.prefixWrites = 0;
+    session.cacheTtl = '5m';
+    return;
+  }
   let w5 = 0;
   let w1 = 0;
   let cold = 0;

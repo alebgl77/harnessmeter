@@ -135,6 +135,7 @@ function writePatches(cwd: string, analysis: Analysis, prepared: Prepared, quiet
       claims: analysis.claims,
       proposals: analysis.proposals,
       bodies: prepared.bodies,
+      snapshot: prepared.snapshot,
       root,
       scope,
       skillDir,
@@ -215,7 +216,7 @@ async function main() {
     claims: prepared.claims,
     sessions,
     bodies: prepared.bodies,
-    currentProject,
+    currentProject: currentProject ?? null,
   });
 
   let t2: T2Result | undefined;
@@ -236,6 +237,7 @@ async function main() {
           t2 = await runT2(candidates, prepared.bodies, sessions, {
             agent,
             model,
+            currentProject: currentProject ?? null,
             onProgress: () => process.stderr.write('.'),
           });
           process.stderr.write(' done\n');
@@ -245,7 +247,7 @@ async function main() {
     }
   }
 
-  const analysis = analyze(cwd, sessions, prepared, t2, currentProject);
+  const analysis = analyze(cwd, sessions, prepared, t2, currentProject ?? null);
 
   if (args.json) {
     // --patch is an explicit request and must not be silently dropped by --json. The

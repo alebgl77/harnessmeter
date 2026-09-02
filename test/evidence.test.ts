@@ -8,8 +8,16 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { confidenceFor, runEvidence, zeroHitUpperBound } from '../src/evidence.ts';
-import { mergeT2, type T2Result } from '../src/evidence-t2.ts';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import {
+  confidenceFor,
+  eligibleSessionsForClaim,
+  runEvidence,
+  zeroHitUpperBound,
+} from '../src/evidence.ts';
+import { mergeT2, runT2, type T2Result } from '../src/evidence-t2.ts';
 import type { Claim, ClaimEvidence, Session, Turn } from '../src/types.ts';
 
 function turn(tools: string[] = [], commands: string[] = [], timestamp?: string): Turn {
@@ -57,6 +65,90 @@ function claim(over: Partial<Claim> = {}): Claim {
     alwaysOnTokens: 26,
     protected: false,
     ...over,
+  };
+}
+
+function fakeT2Agent(
+  failMatch = '',
+  confidence: unknown = 'medium',
+  omitConfidence = false,
+  spoofedSampledFiredIn?: number,
+  responses: Array<'known' | 'zero' | 'unknown' | 'fail' | 'stdout-fail'> = [],
+  kind: 'claude' | 'codex' = 'claude',
+): {
+  agent: { kind: 'claude' | 'codex'; bin: string };
+  prompts: () => string[];
+  cleanup: () => void;
+} {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'harnessmeter-t2-'));
+  const name = `harnessmeter-t2-${process.pid}-${Math.random().toString(36).slice(2, 8)}`;
+  const capture = path.join(root, 'prompts.jsonl');
+  const counter = path.join(root, 'counter.txt');
+  const script = path.join(root, 'agent.mjs');
+  fs.writeFileSync(
+    script,
+    `import fs from 'node:fs';
+let prompt = '';
+process.stdin.setEncoding('utf8');
+process.stdin.on('data', (chunk) => { prompt += chunk; });
+process.stdin.on('end', () => {
+  fs.appendFileSync(${JSON.stringify(capture)}, JSON.stringify(prompt) + '\\n');
+  const index = fs.existsSync(${JSON.stringify(counter)}) ? Number(fs.readFileSync(${JSON.stringify(counter)}, 'utf8')) : 0;
+  fs.writeFileSync(${JSON.stringify(counter)}, String(index + 1));
+  const mode = ${JSON.stringify(responses)}[index] ?? 'known';
+  if (mode === 'fail') {
+    process.stderr.write('fixture telemetry failure');
+    process.exitCode = 2;
+    return;
+  }
+  if (${JSON.stringify(failMatch)} && prompt.includes(${JSON.stringify(failMatch)})) {
+    process.stderr.write('fixture failure');
+    process.exitCode = 2;
+    return;
+  }
+  const verdicts = [...prompt.matchAll(/<rule id="([^"]+)">/g)].map((m) => {
+    const verdict = { id: m[1], outcome: 'unjudgeable', why: 'fixture' };
+    if (!${JSON.stringify(omitConfidence)}) verdict.confidence = ${JSON.stringify(confidence)};
+    if (${JSON.stringify(spoofedSampledFiredIn)} !== undefined) {
+      verdict.sampledFiredIn = ${JSON.stringify(spoofedSampledFiredIn)};
+    }
+    return verdict;
+  });
+  verdicts.push({ id: 'foreign', outcome: 'complied', confidence: 'high', why: 'foreign' });
+  if (${JSON.stringify(kind)} === 'codex') {
+    process.stdout.write(JSON.stringify({ verdicts }));
+  } else {
+    const envelope = { result: JSON.stringify({ verdicts }) };
+    if (mode === 'known' || mode === 'zero') {
+      envelope.total_cost_usd = mode === 'zero' ? 0 : 0.25;
+      envelope.usage = { input_tokens: mode === 'zero' ? 0 : 2, output_tokens: mode === 'zero' ? 0 : 3 };
+    }
+    process.stdout.write(JSON.stringify(envelope));
+  }
+  if (mode === 'stdout-fail') process.exitCode = 2;
+});
+`,
+  );
+  if (process.platform === 'win32') {
+    fs.writeFileSync(path.join(root, `${name}.cmd`), `@echo off\r\n"${process.execPath}" "${script}" %*\r\n`);
+  } else {
+    const shim = path.join(root, name);
+    fs.writeFileSync(shim, `#!/bin/sh\nexec "${process.execPath}" "${script}" "$@"\n`);
+    fs.chmodSync(shim, 0o755);
+  }
+  const previousPath = process.env.PATH;
+  process.env.PATH = `${root}${path.delimiter}${previousPath ?? ''}`;
+  return {
+    agent: { kind, bin: name },
+    prompts: () =>
+      fs.existsSync(capture)
+        ? fs.readFileSync(capture, 'utf8').trim().split('\n').filter(Boolean).map((line) => JSON.parse(line))
+        : [],
+    cleanup: () => {
+      if (previousPath === undefined) delete process.env.PATH;
+      else process.env.PATH = previousPath;
+      fs.rmSync(root, { recursive: true, force: true });
+    },
   };
 }
 
@@ -265,6 +357,324 @@ test('skill presence is scoped the same way', () => {
   assert.equal(ev.observedIn, 1);
 });
 
+test('eligible sessions apply scope and age while retaining unknown timestamps', () => {
+  const foreignRecent = session('other', [turn(['Read'], [], '2026-07-01T10:00:00Z')]);
+  const projectOld = session('mine', [turn(['Read'], [], '2026-01-15T10:00:00Z')]);
+  const projectRecent = session('mine', [turn(['Read'], [], '2026-07-02T10:00:00Z')]);
+  const projectUndated = session('mine', [turn(['Read'])]);
+  const sessions = [foreignRecent, projectOld, projectRecent, projectUndated];
+  const modifiedMs = Date.parse('2026-06-01T00:00:00Z');
+
+  const project = eligibleSessionsForClaim(
+    claim({ scope: 'project', source: { file: 'CLAUDE.md', startLine: 1, endLine: 3, modifiedMs, datedBy: 'mtime' } }),
+    sessions,
+    'mine',
+  );
+  assert.equal(project.pool, 3);
+  assert.deepEqual(project.sessions, [projectRecent, projectUndated]);
+
+  const user = eligibleSessionsForClaim(
+    claim({ scope: 'user', source: { file: 'CLAUDE.md', startLine: 1, endLine: 3, modifiedMs, datedBy: 'mtime' } }),
+    sessions,
+    'mine',
+  );
+  assert.equal(user.pool, 4);
+  assert.deepEqual(user.sessions, [foreignRecent, projectRecent, projectUndated]);
+
+  const unknownProject = eligibleSessionsForClaim(claim(), sessions, undefined);
+  assert.equal(unknownProject.pool, 4, 'undefined preserves the historical unscoped API fallback');
+  const absentProject = eligibleSessionsForClaim(claim(), sessions, null);
+  assert.equal(absentProject.pool, 0, 'null means there is no project population');
+  assert.deepEqual(absentProject.sessions, []);
+});
+
+test('only the last turn decides session age; an invalid last timestamp stays eligible', () => {
+  const modifiedMs = Date.parse('2026-06-01T00:00:00Z');
+  const lastUndated = session('mine', [
+    turn(['Read'], [], '2026-01-15T10:00:00Z'),
+    turn(['Read']),
+  ]);
+  const lastInvalid = session('mine', [
+    turn(['Read'], [], '2026-01-15T10:00:00Z'),
+    turn(['Read'], [], 'not-a-date'),
+  ]);
+  const eligible = eligibleSessionsForClaim(
+    claim({ source: { file: 'CLAUDE.md', startLine: 1, endLine: 3, modifiedMs, datedBy: 'mtime' } }),
+    [lastUndated, lastInvalid],
+    'mine',
+  );
+  assert.deepEqual(eligible.sessions, [lastUndated, lastInvalid]);
+});
+
+test('T2 skips an empty project population without asking and still reports progress', async () => {
+  const fake = fakeT2Agent();
+  const progress: Array<[number, number]> = [];
+  try {
+    const c = claim({ id: 'empty-project' });
+    const result = await runT2(
+      [c],
+      new Map([[c.id, 'Keep answers concise.']]),
+      [session('foreign', [turn(['Read'])])],
+      {
+        agent: fake.agent,
+        currentProject: null,
+        onProgress: (done, total) => progress.push([done, total]),
+      },
+    );
+    assert.deepEqual(fake.prompts(), [], 'the agent must not be invoked for an empty population');
+    assert.deepEqual(progress, [[1, 1]]);
+    assert.equal(result.calls, 0);
+    assert.equal(result.attempts, 0);
+    assert.equal(result.modelCalls, 0);
+    assert.equal(result.networkCalls, 0);
+    assert.equal(result.costUsd, 0);
+    assert.equal(result.tokens, 0);
+    assert.equal(result.verdicts.size, 0);
+  } finally {
+    fake.cleanup();
+  }
+});
+
+test('a successful Codex judgement reports calls but leaves unexposed telemetry unknown', async () => {
+  const fake = fakeT2Agent('', 'medium', false, undefined, ['unknown'], 'codex');
+  try {
+    const c = claim();
+    const result = await runT2([c], new Map([[c.id, 'Rule']]), [session('mine', [turn(['Read'])])], {
+      agent: fake.agent,
+      currentProject: 'mine',
+    });
+    assert.deepEqual({
+      attempts: result.attempts,
+      calls: result.calls,
+      modelCalls: result.modelCalls,
+      networkCalls: result.networkCalls,
+      tokens: result.tokens,
+      costUsd: result.costUsd,
+      measuredTokens: result.measuredTokens,
+      measuredCostUsd: result.measuredCostUsd,
+      tokenResponses: result.tokenResponses,
+      costResponses: result.costResponses,
+    }, {
+      attempts: 1, calls: 1, modelCalls: 1, networkCalls: null,
+      tokens: null, costUsd: null, measuredTokens: 0, measuredCostUsd: 0,
+      tokenResponses: 0, costResponses: 0,
+    });
+  } finally {
+    fake.cleanup();
+  }
+});
+
+test('a failed T2 request is an attempt with unknown model, network, token and cost totals', async () => {
+  const fake = fakeT2Agent('', 'medium', false, undefined, ['fail']);
+  try {
+    const c = claim();
+    const result = await runT2([c], new Map([[c.id, 'Rule']]), [session('mine', [turn(['Read'])])], {
+      agent: fake.agent,
+      currentProject: 'mine',
+    });
+    assert.equal(result.attempts, 1);
+    assert.equal(result.calls, 0);
+    assert.equal(result.modelCalls, null);
+    assert.equal(result.networkCalls, null);
+    assert.equal(result.tokens, null);
+    assert.equal(result.costUsd, null);
+  } finally {
+    fake.cleanup();
+  }
+});
+
+test('a non-zero agent exit cannot launder a valid stdout envelope into T2 evidence', async () => {
+  const fake = fakeT2Agent('', 'high', false, undefined, ['stdout-fail']);
+  try {
+    const c = claim();
+    const result = await runT2([c], new Map([[c.id, 'Rule']]), [session('mine', [turn(['Read'])])], {
+      agent: fake.agent,
+      currentProject: 'mine',
+    });
+    assert.equal(result.attempts, 1);
+    assert.equal(result.calls, 0);
+    assert.equal(result.modelCalls, null);
+    assert.equal(result.networkCalls, null);
+    assert.equal(result.tokens, null);
+    assert.equal(result.costUsd, null);
+    assert.equal(result.verdicts.size, 0);
+  } finally {
+    fake.cleanup();
+  }
+});
+
+test('T2 preserves explicit zero measurements from a successful response', async () => {
+  const fake = fakeT2Agent('', 'medium', false, undefined, ['zero']);
+  try {
+    const c = claim();
+    const result = await runT2([c], new Map([[c.id, 'Rule']]), [session('mine', [turn(['Read'])])], {
+      agent: fake.agent,
+      currentProject: 'mine',
+    });
+    assert.equal(result.tokens, 0);
+    assert.equal(result.costUsd, 0);
+    assert.equal(result.tokenResponses, 1);
+    assert.equal(result.costResponses, 1);
+  } finally {
+    fake.cleanup();
+  }
+});
+
+test('T2 retains measured subtotals while incomplete responses make totals unknown', async () => {
+  for (const responses of [['known', 'unknown'], ['known', 'fail']] as const) {
+    const fake = fakeT2Agent('', 'medium', false, undefined, [...responses]);
+    const claims = Array.from({ length: 13 }, (_, i) => claim({ id: `telemetry-${i}` }));
+    try {
+      const result = await runT2(
+        claims,
+        new Map(claims.map((c) => [c.id, 'Rule'])),
+        [session('mine', [turn(['Read'])])],
+        { agent: fake.agent, currentProject: 'mine' },
+      );
+      assert.equal(result.attempts, 2);
+      assert.equal(result.calls, responses[1] === 'fail' ? 1 : 2);
+      assert.equal(result.modelCalls, responses[1] === 'fail' ? null : 2);
+      assert.equal(result.networkCalls, null);
+      assert.equal(result.tokens, null);
+      assert.equal(result.costUsd, null);
+      assert.equal(result.measuredTokens, 5);
+      assert.equal(result.measuredCostUsd, 0.25);
+      assert.equal(result.tokenResponses, 1);
+      assert.equal(result.costResponses, 1);
+    } finally {
+      fake.cleanup();
+    }
+  }
+});
+
+test('T2 preserves interleaved candidate order and isolates failures and foreign ids', async () => {
+  const fake = fakeT2Agent('FAIL_ME');
+  const projectA = claim({ id: 'project-a', scope: 'project' });
+  const userB = claim({ id: 'user-b', scope: 'user' });
+  const projectC = claim({ id: 'project-c', scope: 'project' });
+  const progress: Array<[number, number]> = [];
+  try {
+    const result = await runT2(
+      [projectA, userB, projectC],
+      new Map([
+        [projectA.id, 'FAIL_ME'],
+        [userB.id, 'User rule'],
+        [projectC.id, 'Project rule'],
+      ]),
+      [session('mine', [turn(['Read'])]), session('foreign', [turn(['Bash'])])],
+      {
+        agent: fake.agent,
+        currentProject: 'mine',
+        onProgress: (done, total) => progress.push([done, total]),
+      },
+    );
+    const promptedIds = fake.prompts().map((prompt) =>
+      [...prompt.matchAll(/<rule id="([^"]+)">/g)].map((match) => match[1]),
+    );
+    assert.deepEqual(promptedIds, [['project-a'], ['user-b'], ['project-c']]);
+    assert.deepEqual(progress, [[1, 3], [2, 3], [3, 3]]);
+    assert.equal(result.calls, 2, 'the failed batch is isolated and later populations still run');
+    assert.deepEqual([...result.verdicts.keys()], ['user-b', 'project-c']);
+    assert.equal(result.verdicts.has('foreign'), false);
+  } finally {
+    fake.cleanup();
+  }
+});
+
+test('T2 caps a contiguous population at twelve claims per call', async () => {
+  const fake = fakeT2Agent();
+  const claims = Array.from({ length: 13 }, (_, i) => claim({ id: `claim-${i + 1}` }));
+  try {
+    const result = await runT2(
+      claims,
+      new Map(claims.map((c) => [c.id, c.id])),
+      [session('mine', [turn(['Read'])])],
+      { agent: fake.agent, currentProject: 'mine' },
+    );
+    const batchSizes = fake.prompts().map(
+      (prompt) => [...prompt.matchAll(/<rule id="([^"]+)">/g)].length,
+    );
+    assert.deepEqual(batchSizes, [12, 1]);
+    assert.equal(result.calls, 2);
+  } finally {
+    fake.cleanup();
+  }
+});
+
+test('T2 records the population actually sampled, capped at eighteen sessions', async () => {
+  for (const [population, sampled] of [[5, 5], [40, 18]] as const) {
+    const fake = fakeT2Agent();
+    try {
+      const c = claim({ id: `population-${population}` });
+      const result = await runT2(
+        [c],
+        new Map([[c.id, 'Rule under review']]),
+        Array.from({ length: population }, () => session('mine', [turn(['Read'])])),
+        { agent: fake.agent, currentProject: 'mine' },
+      );
+      assert.equal(result.verdicts.get(c.id)?.sampledSessions, sampled);
+    } finally {
+      fake.cleanup();
+    }
+  }
+});
+
+test('T2 firing counts use exactly the eighteen sessions sent in the digest', async () => {
+  const c = claim({ id: 'sample-fire' });
+  const bodies = new Map([[c.id, 'Always run npm test before committing.']]);
+
+  for (const [hitIndex, expected] of [[18, 0], [0, 1]] as const) {
+    const fake = fakeT2Agent();
+    const sessions = Array.from({ length: 19 }, (_, i) =>
+      session('mine', [turn(['Bash'], i === hitIndex ? ['npm test'] : ['git status'])]),
+    );
+    try {
+      const result = await runT2([c], bodies, sessions, {
+        agent: fake.agent,
+        currentProject: 'mine',
+      });
+      assert.equal(result.verdicts.get(c.id)?.sampledSessions, 18);
+      assert.equal(result.verdicts.get(c.id)?.sampledFiredIn, expected);
+    } finally {
+      fake.cleanup();
+    }
+  }
+});
+
+test('T2 ignores a sampled firing count supplied by the model', async () => {
+  const fake = fakeT2Agent('', 'medium', false, 18);
+  const c = claim({ id: 'spoofed-fire' });
+  try {
+    const result = await runT2(
+      [c],
+      new Map([[c.id, 'Always run npm test before committing.']]),
+      Array.from({ length: 18 }, () => session('mine', [turn(['Bash'], ['git status'])])),
+      { agent: fake.agent, currentProject: 'mine' },
+    );
+    assert.equal(result.verdicts.get(c.id)?.sampledFiredIn, 0);
+  } finally {
+    fake.cleanup();
+  }
+});
+
+test('T2 fails closed to low confidence when the judge omits or invents confidence', async () => {
+  for (const [confidence, omitted] of [['medium', true], ['certain', false]] as const) {
+    const fake = fakeT2Agent('', confidence, omitted);
+    try {
+      const c = claim({ id: `confidence-${String(confidence)}` });
+      const result = await runT2(
+        [c],
+        new Map([[c.id, 'Rule under review']]),
+        [session('mine', [turn(['Read'])])],
+        { agent: fake.agent, currentProject: 'mine' },
+      );
+      assert.equal(result.verdicts.get(c.id)?.confidence, 'low');
+    } finally {
+      fake.cleanup();
+    }
+  }
+});
+
 // ── a protected claim is never condemned ────────────────────────────────────────────
 
 test('a prevention claim stays protected whatever the evidence says', () => {
@@ -280,12 +690,26 @@ test('a prevention claim stays protected whatever the evidence says', () => {
 
 // ── T2: absence of occasion is not evidence of uselessness ──────────────────────────
 
-function t2With(outcome: string): T2Result {
+function t2With(
+  outcome: string,
+  confidence: 'high' | 'medium' | 'low' = 'high',
+  sampledSessions = 5,
+  sampledFiredIn = 0,
+): T2Result {
   return {
-    verdicts: new Map([['c1', { id: 'c1', outcome: outcome as never, confidence: 'high', why: 'x' }]]),
+    verdicts: new Map([['c1', {
+      id: 'c1', outcome: outcome as never, confidence, sampledSessions, sampledFiredIn, why: 'x',
+    }]]),
     costUsd: 0,
     tokens: 0,
     calls: 1,
+    attempts: 1,
+    modelCalls: 1,
+    networkCalls: null,
+    measuredTokens: 0,
+    measuredCostUsd: 0,
+    tokenResponses: 1,
+    costResponses: 1,
     model: 'sonnet',
   };
 }
@@ -313,6 +737,42 @@ test('T2 complied is load-bearing', () => {
   const ev = baseEvidence();
   mergeT2(ev, t2With('complied'), [claim()]);
   assert.equal(ev.get('c1')!.verdict, 'load-bearing');
+});
+
+test('T2 low confidence cannot produce a decisive verdict', () => {
+  for (const outcome of ['complied', 'violated']) {
+    const ev = baseEvidence();
+    mergeT2(ev, t2With(outcome, 'low', 3), [claim()]);
+    assert.equal(ev.get('c1')!.verdict, 'unproven');
+    assert.equal(ev.get('c1')!.confidence, 'low');
+    assert.equal(ev.get('c1')!.confidenceSource, 't2-judge');
+    assert.equal(ev.get('c1')!.observedIn, 3);
+  }
+});
+
+test('T2 medium and high confidence remain decisive and preserve their sample', () => {
+  for (const confidence of ['medium', 'high'] as const) {
+    const complied = baseEvidence();
+    mergeT2(complied, t2With('complied', confidence, 4), [claim()]);
+    assert.equal(complied.get('c1')!.verdict, 'load-bearing');
+    assert.equal(complied.get('c1')!.confidence, confidence);
+    assert.equal(complied.get('c1')!.confidenceSource, 't2-judge');
+    assert.equal(complied.get('c1')!.observedIn, 4);
+
+    const violated = baseEvidence();
+    mergeT2(violated, t2With('violated', confidence, 4), [claim()]);
+    assert.equal(violated.get('c1')!.verdict, 'ballast');
+    assert.equal(violated.get('c1')!.confidence, confidence);
+    assert.equal(violated.get('c1')!.observedIn, 4);
+  }
+});
+
+test('T2 clamps prior firing counts to the sampled population', () => {
+  const ev = baseEvidence();
+  ev.set('c1', { ...ev.get('c1')!, firedIn: 12, observedIn: 40 });
+  mergeT2(ev, t2With('violated', 'high', 4, 12), [claim()]);
+  assert.equal(ev.get('c1')!.observedIn, 4);
+  assert.equal(ev.get('c1')!.firedIn, 4);
 });
 
 test('T2 cannot override a protected claim', () => {
@@ -478,6 +938,116 @@ test('an unknown edit time excludes nothing', () => {
     currentProject: 'p',
   }).get(c.id)!;
   assert.equal(ev.observedIn, 12);
+});
+
+test('indexed evidence preserves the complete verdict matrix', () => {
+  const recent = '2026-07-01T00:00:00Z';
+  const old = '2026-01-01T00:00:00Z';
+  const make = (
+    id: string,
+    project: string,
+    turns: Turn[],
+    skills: string[] = [],
+    mcps: string[] = [],
+    agents: string[] = [],
+  ) => {
+    const s = session(project, turns, skills);
+    s.id = id;
+    s.mcpServersUsed = new Set(mcps);
+    s.subagentsUsed = new Set(agents);
+    return s;
+  };
+  const sessions = [
+    make('recent', 'mine', [turn(['Read', 'Read'], ['NPM TEST', 'npm test'], recent)], ['build', 'solo'], ['Acme-Server', 'Café'], ['reviewer']),
+    make('old', 'mine', [turn(['Read'], [], old)]),
+    make('undated', 'mine', [turn(['Bash'], ['git status'])], ['build'], ['ACME_SERVER'], ['reviewer']),
+    make('quiet', 'mine', [turn([], [], recent)]),
+    make('invalid-last', 'mine', [turn([], [], old), turn(['Read'], [], 'not-a-date')]),
+    make('foreign', 'other', [turn(['Edit'], ['npm test'], recent)], ['solo']),
+  ];
+  const modifiedMs = AT('2026-06-01T00:00:00Z');
+  const agedSource = { file: 'CLAUDE.md', startLine: 1, endLine: 3, modifiedMs, datedBy: 'mtime' as const };
+  const claims = [
+    claim({ id: 'prose', source: agedSource }),
+    claim({ id: 'user-prose', scope: 'user' }),
+    claim({ id: 'skill-a', kind: 'skill', label: 'skill/plugin-a:build' }),
+    claim({ id: 'skill-b', kind: 'skill', label: 'skill/plugin-b:build' }),
+    claim({ id: 'skill-solo', kind: 'skill', label: 'skill/plugin:solo' }),
+    claim({ id: 'agent', kind: 'subagent', label: 'agent/reviewer' }),
+    claim({ id: 'command', kind: 'command', label: '/ship' }),
+    claim({ id: 'mcp-punctuation', kind: 'mcp-server', label: 'mcp/acme.server' }),
+    claim({ id: 'mcp-unicode', kind: 'mcp-server', label: 'mcp/cafe' }),
+    claim({ id: 'protected', protected: true }),
+  ];
+  const bodies = new Map([
+    ['prose', 'Use Read and run npm test.'],
+    ['user-prose', 'Use Edit.'],
+    ['protected', 'Use Write.'],
+  ]);
+
+  const actual = runEvidence({ claims, sessions, bodies, currentProject: 'mine' });
+  assert.deepEqual(actual, new Map<string, ClaimEvidence>([
+    ['prose', { claimId: 'prose', tier: 'T1', verdict: 'load-bearing', firedIn: 2, observedIn: 4, note: 'prescribed behaviour (1 tool name + 1 command) observed in 2 of 4 sessions; 1 session predating when the file was last written not counted' }],
+    ['user-prose', { claimId: 'user-prose', tier: 'T1', verdict: 'load-bearing', firedIn: 1, observedIn: 6, note: 'prescribed behaviour (1 tool name) observed in 1 of 6 sessions' }],
+    ['skill-a', { claimId: 'skill-a', tier: 'T0', verdict: 'ballast', firedIn: 0, observedIn: 5, note: 'never attributed across 5 sessions — rules out a rate above 45% (95%)' }],
+    ['skill-b', { claimId: 'skill-b', tier: 'T0', verdict: 'ballast', firedIn: 0, observedIn: 5, note: 'never attributed across 5 sessions — rules out a rate above 45% (95%)' }],
+    ['skill-solo', { claimId: 'skill-solo', tier: 'T0', verdict: 'load-bearing', firedIn: 1, observedIn: 5, note: 'attributed in 1 of 5 sessions' }],
+    ['agent', { claimId: 'agent', tier: 'T0', verdict: 'load-bearing', firedIn: 2, observedIn: 5, note: 'dispatched in 2 of 5 sessions' }],
+    ['command', { claimId: 'command', tier: 'none', verdict: 'unproven', firedIn: 0, observedIn: 5, note: 'slash-command invocations are not visible in what we read — needs T2' }],
+    ['mcp-punctuation', { claimId: 'mcp-punctuation', tier: 'T0', verdict: 'load-bearing', firedIn: 1, observedIn: 5, note: 'used in 1 of 5 sessions' }],
+    ['mcp-unicode', { claimId: 'mcp-unicode', tier: 'T0', verdict: 'ballast', firedIn: 0, observedIn: 5, note: 'never used across 5 sessions — schemas still loaded every turn — rules out a rate above 45% (95%)' }],
+    ['protected', { claimId: 'protected', tier: 'T1', verdict: 'protected', firedIn: 0, observedIn: 5, note: 'prescribed behaviour (1 tool name) never observed across 5 sessions — rules out a rate above 45% (95%)' }],
+  ]));
+});
+
+test('evidence indexing reads transcript signals once regardless of claim count', () => {
+  const measure = (claimCount: number) => {
+    const reads = { turns: 0, tools: 0, commands: 0 };
+    const rawTurn = turn([], ['git status'], '2026-07-01T00:00:00Z');
+    const measuredTurn = {
+      ...rawTurn,
+      get tools() { reads.tools++; return rawTurn.tools; },
+      get commands() { reads.commands++; return rawTurn.commands; },
+    } as Turn;
+    const rawSession = session('mine', [measuredTurn]);
+    const measuredSession = {
+      ...rawSession,
+      get turns() { reads.turns++; return rawSession.turns; },
+    } as Session;
+    const claims = Array.from({ length: claimCount }, (_, i) => claim({ id: `indexed-${i}` }));
+    runEvidence({
+      claims,
+      sessions: [measuredSession],
+      bodies: new Map(claims.map((c) => [c.id, 'Use Read and run npm test.'])),
+      currentProject: 'mine',
+    });
+    return reads;
+  };
+
+  const one = measure(1);
+  const many = measure(40);
+  assert.deepEqual(many, one, 'turn/tool/command reads must be corpus-bound, not claim-bound');
+});
+
+test('T2 sampled evidence recalculates only the claims in each batch', async () => {
+  const fake = fakeT2Agent();
+  const claims = Array.from({ length: 13 }, (_, i) => claim({ id: `batch-local-${i}` }));
+  let bodyReads = 0;
+  const bodies = new Map(claims.map((c) => [c.id, 'Use Read.']));
+  const originalGet = bodies.get.bind(bodies);
+  bodies.get = ((key: string) => {
+    bodyReads++;
+    return originalGet(key);
+  }) as typeof bodies.get;
+  try {
+    await runT2(claims, bodies, [session('mine', [turn(['Read'])])], {
+      agent: fake.agent,
+      currentProject: 'mine',
+    });
+    assert.equal(bodyReads, claims.length * 2, 'one prompt read and one local evidence read per claim');
+  } finally {
+    fake.cleanup();
+  }
 });
 
 // ── firing somewhere is not the same as being load-bearing ──────────────────────────
