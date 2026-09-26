@@ -238,6 +238,10 @@ export function buildPatch(input: PatchInput): PatchSet {
     if (!claim) continue;
     // Not this patch's claims. Silently, because it is in the other one.
     if (claim.scope !== scope) continue;
+    if (claim.provider === 'codex') {
+      skipped.push({ label: p.label, reason: 'Codex instruction demotion is not supported; no Claude skill patch generated' });
+      continue;
+    }
 
     const file = path.resolve(claim.source.file);
     const rel = path.relative(path.resolve(root), file);

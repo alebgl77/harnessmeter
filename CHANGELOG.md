@@ -6,6 +6,42 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+These changes are available from source and have not been published as a new npm version.
+
+### Added
+
+- Explicit `--provider claude|codex` profiles. Codex discovers the supported `AGENTS.md`
+  override chain and `.agents/skills`, and reads compatible local cumulative usage from
+  active and archived sessions without applying Claude prices or cache TTLs.
+- `--static` for an inventory without transcripts, with a disclosed static fallback when
+  no sessions are found. Missing behavior, usage and spend remain unavailable; static
+  audits do not produce absence-based demotions.
+- `--project-only` for repository-owned inventories and shared CI baselines, excluding
+  personal files, installed user plugins and local MCP declarations in `~/.claude.json`.
+- Portable, versioned footprint snapshots through `--save-baseline`, comparisons through
+  `--baseline`, and estimated-token/growth gates through `--max-tokens` and `--max-growth`.
+  Exit codes distinguish success (`0`), invalid input/errors (`1`) and budget failure (`2`).
+- Additive JSON fields for schema version, provider, mode, baseline and budget. Availability
+  flags and telemetry coverage distinguish measurements from legacy placeholder values.
+- HTML claim search, kind/verdict filters, sorting, source locations and complete proposal
+  receipts, plus baseline changes and budget results. Synthetic demonstrations are labelled.
+- An [expert/team workflow](docs/expert-workflow.md) and a sourced
+  [comparison](docs/comparison.md), with explicit limits and source-branch examples.
+
+### Changed
+
+- Claude instruction discovery follows a conservative Git-root-to-working-directory
+  chain, including `.claude/CLAUDE.md`; provider surfaces stay separate.
+- Codex's incomplete skill/code-mode attribution cannot support absence confidence or
+  demotions. `--t2` and `--patch` remain Claude-profile features and reject explicit static mode.
+- Invalid options and incompatible baselines fail before output writes. Baseline writes
+  are explicit and atomic; source, report, patch and baseline destination collisions are
+  refused, as are symlinked artifact paths.
+- Malformed Claude telemetry is handled conservatively; incomplete usage is reported as
+  unknown or a measured subtotal. T2 attempts with unavailable usage or cost remain unknown.
+- CI no-session smoke checks now verify a successful static audit with unavailable
+  behavioral/economic evidence, for both source and packaged execution.
+
 ### Planned
 
 - **T3 — natural experiments.** Partly delivered in 0.2.2, and the rest is further away
@@ -19,7 +55,8 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   and its sample. That is worth building when there is history to validate it against.
 - **T4 — field randomisation.** Vary the harness on runs that were going to happen anyway,
   on dead-classified claims only. A randomised trial at zero incremental cost.
-- **Readers for other harnesses.** Codex and Antigravity transcript formats.
+- **Broader reader coverage.** Additional Codex formats and other harnesses such as
+  Antigravity; the supported Codex subset and exclusions are documented in the workflow.
 
 ## [0.3.0] — 2026-08-27
 

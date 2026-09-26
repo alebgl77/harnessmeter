@@ -413,19 +413,21 @@ function ingestLine(session: Session, line: string, seen: ResponseIndex): void {
     return;
   }
 
+  if (!e || typeof e !== 'object' || Array.isArray(e)) return;
+
   if (typeof e.attributionSkill === 'string') session.skillsUsed.add(e.attributionSkill);
   if (typeof e.attributionMcpServer === 'string')
     session.mcpServersUsed.add(e.attributionMcpServer);
   if (!session.cwd && typeof e.cwd === 'string') session.cwd = e.cwd;
   if (!session.gitBranch && typeof e.gitBranch === 'string') session.gitBranch = e.gitBranch;
 
-  if (e.type !== 'assistant' || !e.message) return;
+  if (e.type !== 'assistant' || !e.message || typeof e.message !== 'object' || Array.isArray(e.message)) return;
 
   const { usage, known: usageKnown } = readUsage(e.message.usage);
 
   const tools: string[] = [];
   const commands: string[] = [];
-  for (const b of e.message.content ?? []) {
+  for (const b of Array.isArray(e.message.content) ? e.message.content : []) {
     if (b?.type !== 'tool_use') continue;
     if (typeof b.name === 'string') tools.push(b.name);
     // Every shell invocation is just "Bash" by name, so a rule that prescribes a
@@ -438,7 +440,7 @@ function ingestLine(session: Session, line: string, seen: ResponseIndex): void {
     const sub = b.input?.subagent_type;
     if (typeof sub === 'string') session.subagentsUsed.add(sub);
     // MCP tools are named mcp__<server>__<tool>
-    const m = /^mcp__([^_]+(?:_[^_]+)*?)__/.exec(String(b.name ?? ''));
+    const m = typeof b.name === 'string' ? /^mcp__([^_]+(?:_[^_]+)*?)__/.exec(b.name) : null;
     if (m) session.mcpServersUsed.add(m[1]);
   }
 
@@ -468,7 +470,7 @@ function ingestLine(session: Session, line: string, seen: ResponseIndex): void {
   }
 
   const turn: Turn = {
-    model: String(e.message.model ?? 'unknown'),
+    model: typeof e.message.model === 'string' ? e.message.model : 'unknown',
     usage,
     usageKnown,
     tools,
@@ -495,6 +497,7 @@ const BUFFERED_READ_LIMIT = 8 * 1024 * 1024;
 export async function readSession(file: string, project: string): Promise<Session | undefined> {
   const session: Session = {
     id: path.basename(file, '.jsonl'),
+    provider: 'claude',
     project,
     turns: [],
     skillsUsed: new Set(),
@@ -557,6 +560,8 @@ export async function readSession(file: string, project: string): Promise<Sessio
         }
       }
       ingestStreamingLine(session, line, seen);
+    } catch {
+      return undefined;
     } finally {
       stream.close();
     }

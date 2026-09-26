@@ -45,6 +45,10 @@ export function analyze(
 ): Analysis {
   const prepared = pre ?? prepare(cwd);
   const { claims, bodies } = prepared;
+  const providers = new Set(sessions.length > 0
+    ? sessions.map((s) => s.provider ?? 'claude')
+    : claims.map((c) => c.provider ?? 'claude'));
+  const provider = providers.size === 1 ? [...providers][0] : providers.size === 0 ? 'claude' : undefined;
   const evidence =
     prepared.evidence.size > 0
       ? prepared.evidence
@@ -64,26 +68,30 @@ export function analyze(
       models[t.model] = (models[t.model] ?? 0) + 1;
       if (t.usageKnown === false) continue;
       knownTurns++;
-      if (!isKnownModel(t.model)) unknown.add(t.model);
+      if (s.provider === 'codex' || !isKnownModel(t.model)) unknown.add(t.model);
       billed.input += t.usage.inputTokens;
       billed.cacheRead += t.usage.cacheReadTokens;
       billed.cacheWrite5m += t.usage.cacheWrite5m;
       billed.cacheWrite1h += t.usage.cacheWrite1h;
       billed.output += t.usage.outputTokens;
-      spendUsd += turnCostUsd(t.model, t.usage);
+      if (s.provider !== 'codex') spendUsd += turnCostUsd(t.model, t.usage);
     }
   }
 
-  const cacheSessions = sessions.filter(
+  const completeSessions = sessions.filter(
     (s) => s.turns.length > 0 && s.turns.every((t) => t.usageKnown !== false),
   );
-  const prefixSessions = cacheSessions.filter((s) => s.firstTurnPromptTokens > 0);
+  const cacheSessions = completeSessions.filter((s) => s.provider !== 'codex' && s.cacheEconomicsKnown !== false);
+  const cacheEconomicsKnown = cacheSessions.length > 0 && !sessions.some((s) => s.provider === 'codex');
+  const spendKnown = knownTurns > 0 && !sessions.some((s) => s.provider === 'codex');
+  const prefixSessions = completeSessions.filter((s) => s.firstTurnPromptTokens > 0);
   const medianPrefixTokens = median(
     prefixSessions.map((s) => s.firstTurnPromptTokens),
   );
-  const medianTurnsPerSession = cacheSessions.length > 0
-    ? Math.max(1, median(cacheSessions.map((s) => s.turns.length)))
+  const medianTurnsPerSession = completeSessions.length > 0
+    ? Math.max(1, median(completeSessions.map((s) => s.turns.length)))
     : 0;
+  const medianCacheTurns = median(cacheSessions.map((s) => s.turns.length));
 
   // How the cache really behaved, rather than the convenient assumption that a prefix is
   // written once and read thereafter. Both figures are medians over measured sessions.
@@ -91,19 +99,27 @@ export function analyze(
     ? Math.max(1, median(cacheSessions.map((s) => s.prefixWrites)))
     : 0;
 
-  const projectScoped = currentProject === null
-    ? 0
-    : typeof currentProject === 'string'
-      ? sessions.filter((s) => s.project === currentProject).length
-      : sessions.length;
-  const hasProjectClaim = claims.some((c) => c.scope === 'project' && c.alwaysOnTokens > 0);
-  const projectFloor = hasProjectClaim ? Math.min(sessions.length, projectScoped) : sessions.length;
-  const t2Observed = [...evidence.values()]
-    .filter((ev) => ev.tier === 'T2')
-    .map((ev) => Math.max(0, Math.trunc(ev.observedIn)));
-  const judgedAgainst = t2Observed.length > 0
-    ? Math.min(projectFloor, ...t2Observed)
-    : projectFloor;
+  const populations = new Map<string, { all: number; project: number }>();
+  for (const session of sessions) {
+    const key = session.provider ?? 'claude';
+    let counts = populations.get(key);
+    if (!counts) { counts = { all: 0, project: 0 }; populations.set(key, counts); }
+    counts.all++;
+    if (currentProject === undefined || session.project === currentProject) counts.project++;
+  }
+  const absenceEvidenceKnown = claims.length > 0 && claims.every((claim) =>
+    claim.provider !== 'codex' && evidence.get(claim.id)?.absenceEvidenceKnown !== false,
+  );
+  // Unrelated providers cannot invalidate observable Claude claims, but a Codex claim
+  // has no statistical absence resolution. The corpus is only a ceiling. Evidence records
+  // left after provider, project, age and T2 sampling filters; never rescan its turns.
+  const judgedAgainst = absenceEvidenceKnown ? claims.reduce((floor, claim) => {
+    const counts = populations.get(claim.provider ?? 'claude');
+    const observed = evidence.get(claim.id)?.observedIn;
+    const measured = typeof observed === 'number' && Number.isFinite(observed)
+      ? Math.max(0, Math.trunc(observed)) : 0;
+    return Math.min(floor, measured, (claim.scope === 'user' ? counts?.all : counts?.project) ?? 0);
+  }, claims.length > 0 ? sessions.length : 0) : 0;
   const oneHourSessions = cacheSessions.filter((s) => s.cacheTtl === '1h').length;
   const cacheTtl: '5m' | '1h' = oneHourSessions * 2 > cacheSessions.length ? '1h' : '5m';
 
@@ -135,6 +151,9 @@ export function analyze(
 
     // Prevention claims are never proposed for removal. Their yield is inverted.
     if (c.protected) continue;
+    // Codex absence and cache-write economics are not measured. Even externally
+    // supplied verdicts cannot turn its observations into destructive proposals.
+    if (c.provider === 'codex' || !populations.has(c.provider ?? 'claude')) continue;
 
     if (c.kind === 'mcp-server' && ev.verdict === 'ballast') {
       const fromT2 = ev.confidenceSource === 't2-judge';
@@ -158,7 +177,7 @@ export function analyze(
     if (ev.verdict !== 'ballast') continue;
 
     const saving = cacheSessions.length > 0
-      ? alwaysOnCost(c.alwaysOnTokens, medianTurnsPerSession, cacheTtl, medianPrefixWrites)
+      ? alwaysOnCost(c.alwaysOnTokens, medianCacheTurns, cacheTtl, medianPrefixWrites)
       : 0;
     // A rule the agent ignored is not the same problem as a rule nothing needed.
     // The first wants rewriting, the second wants demoting — don't conflate them.
@@ -223,6 +242,10 @@ export function analyze(
 
   return {
     scannedAt: new Date().toISOString(),
+    provider,
+    cacheEconomicsKnown,
+    spendKnown,
+    absenceEvidenceKnown,
     projects: [...new Set(sessions.map((s) => s.project))],
     sessionCount: sessions.length,
     turnCount,

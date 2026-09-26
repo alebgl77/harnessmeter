@@ -86,6 +86,58 @@ function prepared(claims: Claim[], ev: ClaimEvidence[]) {
   };
 }
 
+test('Codex tokens remain measured without inventing API spend or Claude cache economics', () => {
+  const c = claim({ provider: 'codex' });
+  const s = session({ provider: 'codex', cacheEconomicsKnown: false, prefixWrites: 0, turns: [turn({ model: 'codex-test-model', usage: usage({ inputTokens: 40, cacheReadTokens: 60, cacheWrite1h: 0, outputTokens: 20 }) })] });
+  const a = analyze('.', [s], prepared([c], [evidence()]));
+  assert.equal(a.provider, 'codex');
+  assert.equal(a.telemetryCoverage.knownTurns, 1);
+  assert.equal(a.telemetryCoverage.cacheSessions, 0);
+  assert.equal(a.telemetryCoverage.prefixSessions, 1);
+  assert.equal(a.billedTokens.input, 40);
+  assert.equal(a.billedTokens.cacheRead, 60);
+  assert.equal(a.billedTokens.output, 20);
+  assert.equal(a.spendKnown, false);
+  assert.equal(a.spendUsd, 0);
+  assert.equal(a.cacheEconomicsKnown, false);
+  assert.equal(a.absenceEvidenceKnown, false);
+  assert.equal(a.evidenceFloorSessions, 0);
+  assert.equal(a.evidenceFloorPct, 100);
+  assert.equal(a.medianPrefixWrites, 0);
+  assert.equal(a.medianTurnsPerSession, 1);
+  assert.deepEqual(a.unknownModels, ['codex-test-model']);
+  assert.deepEqual(a.proposals, []);
+});
+
+test('Codex observations cannot justify Claude proposals or inflate its evidence floor', () => {
+  const s = session({ provider: 'codex', cacheEconomicsKnown: false });
+  const a = analyze('.', [s], prepared([claim()], [evidence()]));
+  assert.deepEqual(a.proposals, []);
+  assert.equal(a.evidenceFloorSessions, 0);
+  assert.equal(a.evidenceFloorPct, 100);
+});
+
+test('static and unknown-usage analysis marks monetary/cache fields unavailable', () => {
+  for (const sessions of [[], [session({ turns: [turn({ usageKnown: false })] })]]) {
+    const a = analyze('.', sessions, prepared([claim()], []));
+    assert.equal(a.spendKnown, false);
+    assert.equal(a.cacheEconomicsKnown, false);
+  }
+});
+
+test('mixed-provider sessions do not distort the measured Claude savings calculation', () => {
+  const claude = session();
+  const codex = session({ provider: 'codex', cacheEconomicsKnown: false, turns: Array.from({ length: 100 }, () => turn({ model: 'codex-test-model' })) });
+  const alone = analyze('.', [claude], prepared([claim()], [evidence()]));
+  const mixed = analyze('.', [claude, codex], prepared([claim()], [evidence()]));
+  assert.equal(mixed.provider, undefined);
+  assert.equal(mixed.cacheEconomicsKnown, false);
+  assert.equal(mixed.spendKnown, false);
+  assert.equal(mixed.proposals[0].savingPerSession, alone.proposals[0].savingPerSession);
+  assert.equal(mixed.absenceEvidenceKnown, true);
+  assert.equal(mixed.evidenceFloorSessions, 1);
+});
+
 test('prepare reuses one file snapshot for every claim body', () => {
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'hm-prepare-snapshot-'));
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'hm-prepare-home-'));
@@ -276,6 +328,71 @@ test('a protected claim is never proposed', () => {
 });
 
 // ── the resolution floor describes the weakest population, not the largest ───────────
+
+test('all sessions predating a claim leave zero resolution, even for a large corpus', () => {
+  const c = claim({ source: { file: 'CLAUDE.md', startLine: 1, endLine: 3, modifiedMs: Date.parse('2026-01-02T00:00:00Z'), datedBy: 'git' } });
+  const sessions = Array.from({ length: 200 }, () => session({ turns: [turn({ timestamp: '2026-01-01T12:00:00Z' })] }));
+  const a = analyze('.', sessions, prepared([c], []));
+  assert.equal(a.evidence.get(c.id)?.observedIn, 0);
+  assert.equal(a.evidenceFloorSessions, 0);
+  assert.equal(a.evidenceFloorPct, 100);
+});
+
+test('resolution uses the smallest actual T0/T1 population after age and project filters', () => {
+  const dated = { file: 'CLAUDE.md', startLine: 1, endLine: 3, modifiedMs: Date.parse('2026-01-02T00:00:00Z'), datedBy: 'git' as const };
+  const c0 = claim({ id: 'skill', kind: 'skill', label: 'skill/testing', scope: 'user', source: dated });
+  const c1 = claim({ id: 'prose', scope: 'project', source: dated });
+  const sessions = [
+    ...Array.from({ length: 7 }, () => session({ project: 'mine', turns: [turn({ timestamp: '2026-01-01T12:00:00Z' })] })),
+    ...Array.from({ length: 3 }, () => session({ project: 'mine', turns: [turn({ timestamp: '2026-01-03T12:00:00Z' })] })),
+    ...Array.from({ length: 10 }, () => session({ project: 'other', turns: [turn({ timestamp: '2026-01-03T12:00:00Z' })] })),
+  ];
+  const pre = prepared([c0, c1], []);
+  pre.bodies.set(c1.id, 'Always run npm test');
+  const a = analyze('.', sessions, pre, undefined, 'mine');
+  assert.equal(a.evidence.get(c0.id)?.tier, 'T0');
+  assert.equal(a.evidence.get(c0.id)?.observedIn, 13);
+  assert.equal(a.evidence.get(c1.id)?.tier, 'T1');
+  assert.equal(a.evidence.get(c1.id)?.observedIn, 3);
+  assert.equal(a.evidenceFloorSessions, 3);
+  assert.ok(a.evidenceFloorPct > 63 && a.evidenceFloorPct < 64);
+});
+
+test('resolution reuses every tier observed count, caps populations and treats missing/invalid evidence as zero', () => {
+  const sessions = [
+    ...Array.from({ length: 5 }, () => session({ project: 'mine' })),
+    ...Array.from({ length: 5 }, () => session({ project: 'other' })),
+  ];
+  const claims = [claim({ id: 't0' }), claim({ id: 't1', scope: 'project' }), claim({ id: 't2' })];
+  const ev = [
+    evidence({ claimId: 't0', tier: 'T0', observedIn: 9 }),
+    evidence({ claimId: 't1', tier: 'T1', observedIn: 3 }),
+    evidence({ claimId: 't2', tier: 'T2', observedIn: 7 }),
+  ];
+  assert.equal(analyze('.', sessions, prepared(claims, ev), undefined, 'mine').evidenceFloorSessions, 3);
+  const sampled = ev.map((item) => item.claimId === 't2' ? { ...item, observedIn: 2 } : item);
+  assert.equal(analyze('.', sessions, prepared(claims, sampled), undefined, 'mine').evidenceFloorSessions, 2);
+  const oversized = ev.map((item) => ({ ...item, observedIn: 100 }));
+  assert.equal(analyze('.', sessions, prepared(claims, oversized), undefined, 'mine').evidenceFloorSessions, 5);
+  assert.equal(analyze('.', sessions, prepared(claims, ev.slice(0, 2)), undefined, 'mine').evidenceFloorSessions, 0);
+  for (const observedIn of [NaN, Infinity, -1]) {
+    const invalid = ev.map((item) => item.claimId === 't1' ? { ...item, observedIn } : item);
+    assert.equal(analyze('.', sessions, prepared(claims, invalid), undefined, 'mine').evidenceFloorSessions, 0);
+  }
+});
+
+test('analyses containing Codex claims never advertise a global absence resolution', () => {
+  for (const size of [1, 5, 200]) {
+    const sessions = Array.from({ length: size }, () => session({ provider: 'codex' }));
+    const c = claim({ provider: 'codex' });
+    for (const corpus of [sessions, [...sessions, session()]]) {
+      const a = analyze('.', corpus, prepared([c], [evidence({ observedIn: size })]));
+      assert.equal(a.absenceEvidenceKnown, false);
+      assert.equal(a.evidenceFloorSessions, 0);
+      assert.equal(a.evidenceFloorPct, 100);
+    }
+  }
+});
 
 test('the resolution floor is the rule of three over the sessions read', () => {
   const sessions = Array.from({ length: 32 }, (_, i) => session({ id: String(i) }));
