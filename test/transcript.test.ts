@@ -107,6 +107,24 @@ const assistant = (usage: Record<string, unknown>, content: unknown[] = []) => (
   message: { model: 'claude-opus-5', usage, content },
 });
 
+test('malformed Claude content and metadata cannot crash valid following records', async () => {
+  const entries = [
+    { type: 'assistant', message: { content: {}, model: { toString: null }, usage: { input_tokens: 5 } } },
+    { type: 'assistant', message: { content: true, usage: { input_tokens: 7 } } },
+    { type: 'assistant', message: { content: [null, false, { type: 'tool_use', name: { toString: null } }], usage: { input_tokens: 9 } } },
+    { type: 'assistant', message: [] },
+    assistant({ input_tokens: 11 }, [{ type: 'tool_use', name: 'Bash', input: { command: 'npm test' } }]),
+  ];
+  const f = rawFixture([entries.map((entry) => JSON.stringify(entry)).join('\n')]);
+  try {
+    const s = (await readSession(f.file, 'proj'))!;
+    assert.equal(s.turns.length, 4);
+    assert.deepEqual(s.turns.map((t) => t.usage.inputTokens), [5, 7, 9, 11]);
+    assert.equal(s.turns[0].model, 'unknown');
+    assert.deepEqual(s.turns.at(-1)?.commands, ['npm test']);
+  } finally { f.cleanup(); }
+});
+
 test('reads billed tokens including the 5m/1h cache-write split', async () => {
   const file = fixture([
     assistant({

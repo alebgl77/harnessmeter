@@ -2,13 +2,12 @@
 /**
  * harnessmeter — a profiler for your agentic harness.
  *
- * Reads only local files. Makes no network calls and no model calls.
- * Writes nothing outside .harnessmeter/ in the current project.
+ * T0/T1 reads local files only. T2 calls a model only with explicit opt-in.
+ * Reports default to .harnessmeter/; baseline paths are explicitly selected.
  */
 
 import fs from 'node:fs';
 import path from 'node:path';
-import os from 'node:os';
 import { analyze, prepare, type Prepared } from './analyze.ts';
 import { runEvidence } from './evidence.ts';
 import { mergeT2, runT2, t2Candidates, type T2Result } from './evidence-t2.ts';
@@ -16,8 +15,12 @@ import { detectAgent } from './agent.ts';
 import { buildPatch } from './patch.ts';
 import { renderTerminal } from './report-term.ts';
 import { renderHtml } from './report-html.ts';
-import { claudeHome, findProjectDir, listProjectDirs, scanSessions } from './transcript.ts';
-import type { Analysis } from './types.ts';
+import { claudeHome, findProjectDir, scanSessions } from './transcript.ts';
+import { codexProjectId, scanCodexSessions } from './transcript-codex.ts';
+import { parseArgs, type Args } from './args.ts';
+import { assertSafePath, atomicWrite, compareBaselines, createBaseline, readBaseline, sameTarget, writeBaseline } from './baseline.ts';
+import { evaluateBudget } from './budget.ts';
+import type { Analysis, Session } from './types.ts';
 import { VERSION } from './version.ts';
 
 const HELP = `
@@ -26,57 +29,92 @@ harnessmeter ${VERSION} — price the leases your context window is carrying
   usage: npx harnessmeter [options]
 
   --all              scan every project, not just this directory
+  --provider <name>  claude (default) or codex
+  --static           audit harness files without reading transcripts or calling models
+  --project-only     exclude user harness and installed user plugins
   --limit <n>        cap sessions read, newest first (default 400)
   --json             print machine-readable analysis to stdout
   --no-html          skip writing the HTML report
   --out <path>       HTML output path (default .harnessmeter/report.html)
   --patch            write the demotions as a reviewable diff, and apply nothing
 
+  --save-baseline <path>  explicitly save a portable, text-free footprint snapshot
+  --baseline <path>       compare against an existing snapshot (never overwritten)
+  --max-tokens <n>        fail if estimated resident tokens exceed this integer
+  --max-growth <pct>      fail if growth exceeds this percentage; requires --baseline
+
   --t2               escalate unproven claims to your local agent for judgement
   --t2-model <m>     model for T2 (default: sonnet)
   --yes              skip the T2 confirmation prompt
 
-  --help
+  --help / --version
+
+  No transcripts: a disclosed static audit succeeds. No absence-based demotions.
+  --static rejects --t2/--patch; Codex currently rejects --t2/--patch.
+  Exit codes: 0 pass, 1 invalid input/error, 2 budget exceeded.
 
   T0/T1 are free: local files only, zero model calls, zero network.
   T2 spends your own quota through your own agent CLI, and says what it cost.
 `;
 
-type Args = {
-  all: boolean; limit: number; json: boolean; html: boolean; out?: string;
-  patch: boolean; t2: boolean; t2Model?: string; yes: boolean; help: boolean;
-};
-
-/**
- * A bare agent command still goes through a shell on Windows, which is how a `.cmd` shim
- * gets resolved, so a value reaching argv can still reach a shell. The model name is
- * therefore constrained to what a model id can actually contain.
- */
-function safeModel(v: string | undefined): string | undefined {
-  if (!v) return undefined;
-  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(v)) {
-    process.stderr.write(`\n  Ignoring --t2-model "${v.slice(0, 40)}": not a valid model id.\n`);
-    return undefined;
-  }
-  return v;
+function isDefaultOutput(cwd: string, output: string): boolean {
+  const directory = path.join(cwd, '.harnessmeter');
+  const rel = path.relative(directory, path.resolve(output));
+  return rel !== '..' && !rel.startsWith('..' + path.sep) && !path.isAbsolute(rel);
 }
 
-function parseArgs(argv: string[]): Args {
-  const a: Args = { all: false, limit: 400, json: false, html: true, patch: false, t2: false, yes: false, help: false };
-  for (let i = 0; i < argv.length; i++) {
-    const v = argv[i];
-    if (v === '--all') a.all = true;
-    else if (v === '--json') a.json = true;
-    else if (v === '--no-html') a.html = false;
-    else if (v === '--patch') a.patch = true;
-    else if (v === '--t2') a.t2 = true;
-    else if (v === '--yes' || v === '-y') a.yes = true;
-    else if (v === '--help' || v === '-h') a.help = true;
-    else if (v === '--limit') a.limit = Math.max(1, Number(argv[++i]) || 400);
-    else if (v === '--t2-model') a.t2Model = safeModel(argv[++i]);
-    else if (v === '--out') a.out = argv[++i];
+/** Validate every active writer together before any artifact or model call is made. */
+function preflightOutputs(cwd: string, args: Args, prepared: Prepared, htmlOutput: string): void {
+  const outputs: { label: string; file: string }[] = [];
+  if (!args.json && args.html) outputs.push({ label: 'HTML report', file: htmlOutput });
+  if (args.patch) {
+    for (const name of ['demote.patch', 'demote-user.patch']) {
+      outputs.push({ label: name, file: path.join(cwd, '.harnessmeter', name) });
+    }
   }
-  return a;
+  if (args.saveBaseline) outputs.push({ label: 'saved baseline', file: args.saveBaseline });
+
+  const privateIgnore = path.join(cwd, '.harnessmeter', '.gitignore');
+  if ([args.baseline, ...outputs.map((output) => output.file)].some((file) => file && sameTarget(file, privateIgnore))) {
+    throw new Error('Outputs and baselines must not use the private artifact .gitignore path');
+  }
+  // The implicit privacy file is also a writer: an existing hardlink to a source or
+  // baseline must not be replaced just because another report uses this directory.
+  if (outputs.some((output) => isDefaultOutput(cwd, output.file))) {
+    outputs.push({ label: 'private artifact .gitignore', file: privateIgnore });
+  }
+  const inputs = [...prepared.snapshot.keys()].map((file) => ({ label: 'scanned harness source', file }));
+  if (args.baseline) inputs.push({ label: 'read baseline', file: args.baseline });
+  const nested = (parent: string, child: string) => {
+    const relative = path.relative(path.resolve(parent), path.resolve(child));
+    return relative !== '' && relative !== '..' && !relative.startsWith('..' + path.sep) && !path.isAbsolute(relative);
+  };
+
+  for (let i = 0; i < outputs.length; i++) {
+    const output = outputs[i];
+    assertSafePath(output.file);
+    if (fs.existsSync(output.file) && !fs.statSync(output.file).isFile()) {
+      throw new Error(`${output.label} output must be a regular file`);
+    }
+    for (const other of [...inputs, ...outputs.slice(0, i)]) {
+      if (sameTarget(output.file, other.file) || nested(output.file, other.file) || nested(other.file, output.file)) {
+        throw new Error(`${output.label} and ${other.label} must use different files`);
+      }
+    }
+  }
+}
+
+/** Every artifact in the default directory is private, including JSON-mode patches. */
+function protectDefaultOutput(cwd: string, output: string): void {
+  if (!isDefaultOutput(cwd, output)) return;
+  const directory = path.join(cwd, '.harnessmeter');
+  assertSafePath(directory);
+  fs.mkdirSync(directory, { recursive: true });
+  const ignore = path.join(directory, '.gitignore');
+  assertSafePath(ignore);
+  // The final wildcard overrides older exception rules as well as covering new outputs.
+  const previous = fs.existsSync(ignore) ? fs.readFileSync(ignore, 'utf8') : '';
+  if (!previous.endsWith('\n*\n')) atomicWrite(ignore, previous + '\n# Private harnessmeter artifacts.\n*\n');
 }
 
 /**
@@ -126,6 +164,7 @@ function writePatches(cwd: string, analysis: Analysis, prepared: Prepared, quiet
   ];
 
   const dir = path.join(cwd, '.harnessmeter');
+  protectDefaultOutput(cwd, path.join(dir, 'demote.patch'));
   // Reports go to stderr so that --json stdout stays machine-readable.
   const say = (s: string) => (quiet ? process.stderr : process.stdout).write(s);
   let wrote = 0;
@@ -154,7 +193,7 @@ function writePatches(cwd: string, analysis: Analysis, prepared: Prepared, quiet
     }
 
     fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(out, set.text, 'utf8');
+    atomicWrite(out, set.text);
     wrote++;
 
     const rel = path.relative(cwd, out) || out;
@@ -182,36 +221,33 @@ async function main() {
     process.stdout.write(HELP);
     return;
   }
+  if (args.version) {
+    process.stdout.write(VERSION + '\n');
+    return;
+  }
 
   const cwd = process.cwd();
-
-  // Two different things, and conflating them is what let `--all` compare a project's
-  // claims against other projects' sessions:
-  //   currentProject — which project's harness we are judging. Always the cwd's.
-  //   sessionProject — which transcripts to read. Widened by --all.
-  const currentProject = findProjectDir(cwd);
-  const sessionProject = args.all ? undefined : currentProject;
-
-  if (!args.all && !currentProject) {
-    const known = listProjectDirs().length;
-    process.stderr.write(
-      `\n  No Claude Code transcripts found for this directory.\n` +
-        (known
-          ? `  ${known} other project${known === 1 ? '' : 's'} on this machine — rerun with --all to scan them.\n\n`
-          : `  Looked in ~/.claude/projects. Nothing there yet.\n\n`),
-    );
-    process.exitCode = 1;
-    return;
+  const htmlOutput = args.out ?? path.join(cwd, '.harnessmeter', 'report.html');
+  const prepared = prepare(cwd, { provider: args.provider, includeUser: !args.projectOnly });
+  preflightOutputs(cwd, args, prepared, htmlOutput);
+  const previous = args.baseline ? readBaseline(args.baseline, {
+    provider: args.provider, scope: args.projectOnly ? 'project' : 'project+user',
+  }) : undefined;
+  // Static mode never even discovers transcript directories. In measured mode the
+  // judged project remains cwd's, independently of --all widening the session corpus.
+  const currentProject = args.static ? null : args.provider === 'codex' ? codexProjectId(cwd) : findProjectDir(cwd) ?? null;
+  let sessions: Session[] = [];
+  if (!args.static) {
+    sessions = args.provider === 'codex'
+      ? await scanCodexSessions({ cwd, all: args.all, limit: args.limit })
+      : args.all || currentProject
+        ? await scanSessions({ project: args.all ? undefined : currentProject!, limit: args.limit })
+        : [];
   }
-
-  const sessions = await scanSessions({ project: sessionProject, limit: args.limit });
-  if (sessions.length === 0) {
-    process.stderr.write('\n  No sessions with usage data found.\n\n');
-    process.exitCode = 1;
-    return;
+  const mode = args.static || sessions.length === 0 ? 'static' : 'measured';
+  if (!args.static && mode === 'static') {
+    process.stderr.write(`\n  No ${args.provider === 'codex' ? 'Codex' : 'Claude Code'} sessions found; using a static harness audit.\n  Token estimates are available; behavioral evidence and measured economics are unavailable.\n`);
   }
-
-  const prepared = prepare(cwd);
   prepared.evidence = runEvidence({
     claims: prepared.claims,
     sessions,
@@ -220,7 +256,7 @@ async function main() {
   });
 
   let t2: T2Result | undefined;
-  if (args.t2) {
+  if (args.t2 && mode !== 'static') {
     const candidates = t2Candidates(prepared.claims, prepared.evidence);
     if (candidates.length === 0) {
       process.stderr.write('\n  T2: nothing to escalate — no unproven claims at T0/T1.\n');
@@ -248,6 +284,27 @@ async function main() {
   }
 
   const analysis = analyze(cwd, sessions, prepared, t2, currentProject ?? null);
+  analysis.provider = args.provider;
+  const snapshot = args.baseline || args.saveBaseline
+    ? createBaseline({ cwd, provider: args.provider, includeUser: !args.projectOnly,
+      claims: prepared.claims, bodies: prepared.bodies })
+    : undefined;
+  const comparison = previous ? compareBaselines(snapshot!, previous) : null;
+  const budget = evaluateBudget(analysis.harnessEstTokens, {
+    maxTokens: args.maxTokens, maxGrowth: args.maxGrowth, baselineTokens: previous?.totalTokens,
+  });
+  if (args.saveBaseline) {
+    protectDefaultOutput(cwd, args.saveBaseline);
+    writeBaseline(args.saveBaseline, snapshot!);
+    process.stderr.write(`  baseline saved: ${args.saveBaseline}\n`);
+  }
+  const governance = { schemaVersion: 1, provider: args.provider, mode,
+    baseline: { comparison, saved: Boolean(args.saveBaseline) }, budget };
+  const reportContext = { comparison: comparison ?? undefined, budget };
+  if (!budget.passed) {
+    process.exitCode = 2;
+    for (const check of budget.violations) process.stderr.write(`  Budget exceeded: ${check.metric} ${check.actual ?? 'unbounded'} > ${check.limit}. ${check.reason ?? ''}\n`);
+  }
 
   if (args.json) {
     // --patch is an explicit request and must not be silently dropped by --json. The
@@ -255,7 +312,7 @@ async function main() {
     if (args.patch) writePatches(cwd, analysis, prepared, true);
     process.stdout.write(
       JSON.stringify(
-        { ...analysis, evidence: Object.fromEntries(analysis.evidence) },
+        { ...analysis, ...governance, evidence: Object.fromEntries(analysis.evidence) },
         null,
         2,
       ) + '\n',
@@ -263,30 +320,15 @@ async function main() {
     return;
   }
 
-  process.stdout.write(renderTerminal(analysis) + '\n');
+  process.stdout.write(`\n  Provider: ${args.provider} · mode: ${mode} · scope: ${args.projectOnly ? 'project' : 'project + user'}\n`);
+  process.stdout.write(renderTerminal(analysis, reportContext) + '\n');
 
   if (args.patch) writePatches(cwd, analysis, prepared, false);
 
   if (args.html) {
-    const out = args.out ?? path.join(cwd, '.harnessmeter', 'report.html');
-    const dir = path.dirname(out);
-    fs.mkdirSync(dir, { recursive: true });
-
-    // The report describes your harness — section headings, skill names, MCP servers.
-    // Default output goes in the repo, so make it un-committable by default rather than
-    // relying on the user to remember.
-    if (!args.out) {
-      const ignore = path.join(dir, '.gitignore');
-      if (!fs.existsSync(ignore)) {
-        fs.writeFileSync(
-          ignore,
-          '# harnessmeter output describes your harness — keep it out of git.\n*\n',
-          'utf8',
-        );
-      }
-    }
-
-    fs.writeFileSync(out, renderHtml(analysis), 'utf8');
+    const out = htmlOutput;
+    protectDefaultOutput(cwd, out);
+    atomicWrite(out, renderHtml(analysis, reportContext));
     process.stdout.write(`  report  ${path.relative(cwd, out) || out}\n\n`);
   }
 }

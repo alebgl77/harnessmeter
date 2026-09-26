@@ -192,7 +192,7 @@ export async function runT2(
   const batches: Batch[] = [];
   for (const claim of candidates) {
     const age = claim.source.modifiedMs > 0 ? claim.source.modifiedMs : 0;
-    const key = `${claim.scope}:${age}`;
+    const key = `${claim.provider ?? 'claude'}:${claim.scope}:${age}`;
     let eligible = sessionsByPopulation.get(key);
     if (!eligible) {
       eligible = eligibleSessionsForClaim(claim, sessions, opts.currentProject).sessions;

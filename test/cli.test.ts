@@ -223,19 +223,23 @@ test('a corpus with only incompatible usage remains analyzable and reports telem
   }
 });
 
-test('a machine with no transcripts exits 1 with guidance rather than a stack trace', () => {
+test('a machine with no transcripts succeeds with a disclosed static audit and unavailable telemetry', () => {
   const empty = fs.mkdtempSync(path.join(os.tmpdir(), 'hm-empty-'));
   try {
-    execFileSync(process.execPath, [BIN], {
+    fs.writeFileSync(path.join(empty, 'CLAUDE.md'), '# Testing\nAlways run npm test before committing any code changes.\n');
+    const output = execFileSync(process.execPath, [BIN, '--json', '--project-only'], {
       cwd: empty,
       env: { ...process.env, CLAUDE_HOME: path.join(empty, 'nothing') },
       encoding: 'utf8',
     });
-    assert.fail('expected a non-zero exit');
-  } catch (err: any) {
-    assert.equal(err.status, 1);
-    assert.match(String(err.stderr), /No Claude Code transcripts/i);
-    assert.doesNotMatch(String(err.stderr), /at .*\.js:\d+/, 'leaked a stack trace');
+    const analysis = JSON.parse(output);
+    assert.equal(analysis.mode, 'static');
+    assert.equal(analysis.telemetryCoverage.status, 'none');
+    assert.equal(analysis.spendKnown, false);
+    assert.equal(analysis.cost.modelCalls, 0);
+    assert.deepEqual(analysis.proposals, []);
+    assert.ok(analysis.claims.length > 0);
+    assert.ok(Object.values(analysis.evidence).every((ev: any) => ev.verdict === 'unproven' || ev.verdict === 'protected'));
   } finally {
     fs.rmSync(empty, { recursive: true, force: true });
   }

@@ -179,12 +179,13 @@ export function eligibleSessionsForClaim(
   sessions: Session[],
   currentProject?: string | null,
 ): EligibleSessions {
+  const providerSessions = sessions.filter((s) => (s.provider ?? 'claude') === (claim.provider ?? 'claude'));
   const pool =
     claim.scope === 'user' || currentProject === undefined
-      ? sessions
+      ? providerSessions
       : currentProject === null
         ? []
-        : sessions.filter((s) => s.project === currentProject);
+        : providerSessions.filter((s) => s.project === currentProject);
   const since = claim.source.modifiedMs;
   return {
     sessions:
@@ -217,6 +218,7 @@ export function runEvidence({
   currentProject,
 }: EvidenceInput): Map<string, ClaimEvidence> {
   const out = new Map<string, ClaimEvidence>();
+  const codexLimit = 'Codex attribution is incomplete; absence rates and removal confidence are unavailable';
   const factBySession = new WeakMap<Session, SessionFact>();
   const facts = sessions.map((session) => {
     let fact = factBySession.get(session);
@@ -256,15 +258,14 @@ export function runEvidence({
   const cache = new Map<string, Index>();
   const indexFor = (claim: Claim): Index => {
     const since = claim.source.modifiedMs;
-    const key = `${claim.scope}:${since}`;
+    const provider = claim.provider ?? 'claude';
+    const key = `${provider}:${claim.scope}:${since}`;
     let idx = cache.get(key);
     if (!idx) {
-      const pool =
-        claim.scope === 'user' || currentProject === undefined
-          ? facts
-          : currentProject === null
-            ? []
-            : facts.filter((fact) => fact.project === currentProject);
+      const pool = facts.filter((fact) =>
+        (fact.session.provider ?? 'claude') === provider &&
+        (claim.scope === 'user' || currentProject === undefined || fact.project === currentProject),
+      );
       const eligible =
         since > 0
           ? pool.filter((fact) => fact.endedMs === 0 || fact.endedMs >= since)
@@ -291,9 +292,11 @@ export function runEvidence({
         verdict: claim.protected ? 'protected' : 'unproven',
         firedIn: 0,
         observedIn: 0,
-        note: idx.pool
+        ...(claim.provider === 'codex' ? { absenceEvidenceKnown: false } : {}),
+        note: (idx.pool
           ? `every session in scope predates when ${claim.source.datedBy === 'git' ? 'this section last changed in' : 'the file was last written'} ${named} — nothing observed of this text`
-          : 'no sessions in scope for this claim — nothing observed either way',
+          : 'no sessions in scope for this claim — nothing observed either way')
+          + (claim.provider === 'codex' ? ` — ${codexLimit}` : ''),
       });
       continue;
     }
@@ -380,12 +383,19 @@ export function runEvidence({
                 : `prescribed behaviour (${checked}) never observed across ${total} sessions`,
               fired,
               total,
+              claim,
             ),
             idx,
             claim,
           ),
         };
       }
+    }
+    if (claim.provider === 'codex') {
+      // Codex rollouts do not promise complete skill attribution or visibility into
+      // tools called inside code-mode. Missing signatures cannot support demotion.
+      ev.absenceEvidenceKnown = false;
+      ev.note += ` — ${codexLimit}`;
     }
     out.set(claim.id, ev);
   }
@@ -408,7 +418,7 @@ function t0(claim: Claim, idx: Index, fired: number, total: number, note: string
     verdict: verdictFor(claim, fired, total),
     firedIn: fired,
     observedIn: total,
-    note: withStale(withBound(note, fired, total), idx, claim),
+    note: withStale(withBound(note, fired, total, claim), idx, claim),
   };
 }
 
@@ -463,8 +473,8 @@ export function confidenceFor(observedIn: number): 'high' | 'medium' | 'low' {
 }
 
 /** A silence is only as strong as the sample it was measured over. Say how strong. */
-function withBound(note: string, fired: number, total: number): string {
-  if (fired > 0 || total <= 0) return note;
+function withBound(note: string, fired: number, total: number, claim: Claim): string {
+  if (claim.provider === 'codex' || fired > 0 || total <= 0) return note;
   const pct = zeroHitUpperBound(total) * 100;
   return `${note} — rules out a rate above ${pct < 10 ? pct.toFixed(1) : pct.toFixed(0)}% (95%)`;
 }
@@ -474,6 +484,7 @@ function verdictFor(claim: Claim, fired: number, total: number): Verdict {
   if (total === 0) return 'unproven';
   // Never fired. Whether that means dead depends entirely on how many chances it had.
   if (fired === 0) {
+    if (claim.provider === 'codex') return 'unproven';
     return zeroHitUpperBound(total) <= BALLAST_MAX_BOUND ? 'ballast' : 'unproven';
   }
   // Firing somewhere is not the same as being load-bearing. One hit in three hundred

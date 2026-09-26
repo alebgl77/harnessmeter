@@ -10,272 +10,210 @@
   <img src="https://img.shields.io/badge/license-MIT-4E9A6B?style=flat-square" alt="license: MIT">
   <img src="https://img.shields.io/badge/dependencies-0-4E9A6B?style=flat-square" alt="zero dependencies">
   <img src="https://img.shields.io/badge/api_keys-zero-4E9A6B?style=flat-square" alt="zero api keys">
-  <img src="https://img.shields.io/badge/network-none-4E9A6B?style=flat-square" alt="no network">
+  <img src="https://img.shields.io/badge/T0%2FT1-local-4E9A6B?style=flat-square" alt="T0/T1: local">
 </p>
 
 ---
 
-You have 4,000 lines of `CLAUDE.md`, twelve subagents, eight MCP servers, and **zero tests**.
-Someone edits one line and the behaviour of your whole team shifts, silently.
+**Review the context your coding agents carry.** harnessmeter inventories instructions and
+skills, estimates their resident footprint, and uses compatible local sessions to show
+what evidence supports keeping or demoting a rule.
 
-We have profilers for CPU, memory, SQL, and JS bundles. We have **none for context** — the
-scarcest resource in agentic engineering. Every token of your harness is loaded on *every
-turn*, of *every session*, of *every developer*. Nobody can tell you which lines pay for
-themselves.
+For experts and teams using Claude Code and Codex, it connects three decisions:
 
-`harnessmeter` prices them.
+- **Onboard:** understand a repository's harness before any sessions exist.
+- **Review:** compare instruction changes against a committed baseline and enforce token budgets.
+- **Investigate:** inspect observed usage, evidence limits and reviewable Claude demotion proposals.
 
-## The frame
-
-**Your context window is a commons with no rent.** Every instruction occupies space for
-free, forever, regardless of what it produces. Two things follow, and you've felt both:
-
-- `CLAUDE.md` only ever grows.
-- At 4,000 lines, nobody dares delete anything, because nobody can prove what's load-bearing.
-
-So we give every block a **lease**: a measured price, a measured yield, and a renewal that
-has to be earned.
+A smaller harness is not automatically a better harness. Token budgets constrain estimated
+size; they do not prove task quality, compliance or savings.
 
 ## Run it
 
-```sh
-npx harnessmeter          # this project
-npx harnessmeter --all    # every project on this machine
-npx harnessmeter --patch  # write the demotions as a diff you can read
-npx harnessmeter --t2     # escalate the unproven claims (see below)
-```
-
-Requires Node ≥ 20 and has **no runtime dependencies at all**. It reads
-`~/.claude/projects/**/*.jsonl` and your harness files, writes `.harnessmeter/report.html`,
-and touches nothing else.
-
-<sub>The published package ships compiled JavaScript, because Node refuses to strip types
-under <code>node_modules</code>. A source checkout has no build step — Node runs the
-TypeScript directly — which needs Node ≥ 22.18.</sub>
-
-## What it shows
-
-<p align="center">
-  <img src="assets/report.svg" alt="Example harnessmeter report" width="100%">
-</p>
-
-<p align="center"><sub>Illustrative output. Not a real measurement.</sub></p>
-
-## The arithmetic everyone gets wrong
-
-Every "your CLAUDE.md costs you $X" post multiplies tokens by turns. That ignores prompt
-caching, and it overstates an always-on block by roughly **5×**.
-
-<p align="center">
-  <img src="assets/cache-math.svg" alt="Naive vs cache-weighted token accounting" width="100%">
-</p>
-
-A cached prefix is billed as a write at `1.25×` (5-minute TTL) or `2×` (1-hour TTL), and
-as reads at `0.1×` in between. Getting this right is the whole point: an instrument that
-inflates its own findings is not an instrument.
-
-The tempting next step is to assume one write per session. That is also wrong, and
-harnessmeter does not assume it — it **counts** the writes. A cache entry expires with its
-TTL, and compaction or any edit to a harness file invalidates it, so a long session pays
-the write multiplier again and again. On the corpus this was measured against, the median
-session writes its prefix **six times**, at the 1-hour rate. Pricing it as one write at the
-5-minute rate understates a resident block by 1.1× to 2.5×, depending on how long your
-sessions run and how often they go cold — so harnessmeter prints the write count and the
-TTL it measured rather than applying a fixed correction factor.
-
-It also moves the headline metric off dollars. The dominant cost of a bloated harness is
-**attention dilution and window consumed**, not the invoice. So harnessmeter reports
-**context share** and **dead share** first, and money second.
-
-And it surfaces results you would not have guessed:
-
-- A 200-token always-on rule can cost more than a 3,000-token skill that loads 2% of the
-  time. Residency beats size.
-- A skill's real always-on tax is its **frontmatter description**, not its body — the body
-  only loads on use. Pricing the whole file overstates it by an order of magnitude.
-- On the setups measured so far, `CLAUDE.md` is a **minority** of the always-on prefix —
-  the skill descriptions sitting beside it outweigh it roughly two to one. The file
-  everyone argues about is rarely the expensive one.
-- Most of the prefix is still **unattributed**, and harnessmeter reports it as exactly that.
-  Claude Code's own system prompt and your MCP tool schemas are in there, but their sizes
-  are only knowable at runtime, so no breakdown is printed. Naming a culprit we have not
-  measured would be the same mistake as the tokens-×-turns figure above.
-
-## How it measures
-
-"Is this line load-bearing?" is not directly observable. So evidence is **tiered**, and the
-tier reached is always printed next to the claim. Measurement budget is spent only where
-the decision is actually uncertain.
-
-```mermaid
-flowchart LR
-    T0["<b>T0 · Presence</b><br/>is it even loaded?<br/><i>free · shipped</i>"]
-    T1["<b>T1 · Consequence</b><br/>mechanical footprint<br/>in the trajectory<br/><i>free · shipped</i>"]
-    T2["<b>T2 · Judgement</b><br/>trajectory review by<br/>your local agent<br/><i>your own quota · shipped</i>"]
-    T3["<b>T3 · Natural experiment</b><br/>staggered adoption in<br/>harness git history<br/><i>free · planned</i>"]
-    T4["<b>T4 · Field randomisation</b><br/>vary the harness on runs<br/>that were happening anyway<br/><i>zero incremental · planned</i>"]
-
-    T0 -->|"uncertain"| T1 -->|"uncertain"| T2 -->|"uncertain"| T3 -->|"uncertain"| T4
-```
-
-### T2, and what it costs
-
-T0 and T1 are free but blunt: they can only rule on claims with a mechanically observable
-footprint. Everything else comes back `unproven` — honest, but not useful. `--t2` escalates
-exactly those, and only those.
-
-It shells out to the agent CLI you already have (`claude`, `codex`) and spends **your own
-quota** — harnessmeter never holds an API key. It sends the claim text plus a **shape-only
-digest** of sampled sessions: turn counts and tool-call tallies. No message content, no file
-contents, no paths. You are asked to confirm before anything is sent.
-
-That bound is deliberate, and it bounds what T2 may claim: a rule about tone or wording
-cannot be judged from a tool trajectory, so it returns **`unjudgeable`** rather than a
-guess. A wrong "complied" is worse than an honest "I can't tell".
-
-Calls are batched hard — one call judging twelve claims, never twelve calls. On a loaded
-setup a single headless invocation costs about **$0.11 before it does anything**, because it
-pays the full always-on prefix. That measurement is itself an argument for the tool.
-
-T2 distinguishes two failures that look alike and are not: a rule **nothing needed** wants
-demoting; a rule **the agent ignored** wants rewriting. The report never conflates them.
-
-The balance line reports what the run cost and how long it takes to pay for itself, so the
-"net-negative by construction" claim can be audited rather than believed.
-
-Two more design notes worth stating plainly:
-
-**History is the control arm.** Classical ablation pays for both arms. But the "with the
-rule" arm already exists — it's in your session transcripts. We only pay for the
-counterfactual. Half the cost, and perfect pairing, because it is literally the same task.
-
-**Your `git log` is an experiment log.** A claim is dated by the commit that last touched
-its own lines, so a rule rewritten yesterday is not judged on last month's sessions. That
-much ships today. Turning it into a *causal* estimate needs many repositories adopting the
-same advice on different dates — see the roadmap for why this tool will not be the thing
-that collects them.
-
-## What it proposes
-
-The primary action is **not deletion — it's demotion.** A section nothing was observed to
-need moves out of your memory file and into a skill, where only its frontmatter description
-stays resident and the body loads when something asks for it.
-
-`--patch` writes that move as a unified diff and applies nothing:
+The provider, static-audit and baseline workflow below is **unreleased source-branch work**.
+The published `0.3.0` package does not include these new flags. From this checkout, use
+Node **22.18 or newer** and the source entry point:
 
 ```sh
-npx harnessmeter --patch
-#   patch   .harnessmeter/demote.patch  1 demotion from this project — ~4,820 eff tok/session
-#           review it, then: git -C "/path/to/project" apply ".../demote.patch"
+node src/cli.ts --static --project-only                  # Claude inventory, no sessions
+node src/cli.ts --provider codex --static --project-only # Codex inventory, no sessions
+node src/cli.ts --provider claude                        # compatible local Claude sessions
+node src/cli.ts --provider codex                         # compatible local Codex sessions
+node src/cli.ts --help
 ```
 
-```diff
- # Testing
- Always run npm test before committing, and never skip the suite.
+To inspect another project, run `node /absolute/path/to/harnessmeter/src/cli.ts` from that
+project's directory. There is no install or build step for source use, and no runtime
+dependency. `bin/harnessmeter.js` prefers `dist/` when present; use `src/cli.ts` while
+developing to avoid running an older build.
 
--# Legacy migration notes
--The old v1 API used snake_case for every field name, and the migration
--script in tools/migrate.py rewrote them on read. That script was removed
--in 2024 and nothing depends on it any more.
-+++ b/.claude/skills/legacy-migration-notes/SKILL.md
-+---
-+name: legacy-migration-notes
-+description: "Use when working on legacy migration notes. The old v1 API used snake_case…"
-+---
+The released Claude workflow remains available with `npx harnessmeter` on Node **20 or
+newer**. Publishing the new workflow requires a separately reviewed release; this change
+does not bump or publish a version.
+
+By default, a run writes `.harnessmeter/report.html`. `--json` prints JSON instead of
+writing HTML; `--no-html` keeps terminal output only. T0/T1 read local files and make no
+network or model calls. With no matching sessions, a run succeeds as an explicitly
+labelled static audit: behavioral evidence and measured economics remain unavailable.
+
+## Make instruction changes reviewable
+
+From the repository being audited, using the source entry point described above:
+
+```sh
+node /absolute/path/to/harnessmeter/src/cli.ts --static --project-only --save-baseline harnessmeter.claude.json
+node /absolute/path/to/harnessmeter/src/cli.ts --static --project-only --baseline harnessmeter.claude.json --max-tokens 8000 --max-growth 5
 ```
 
-**Read the description before applying.** After the move it is the only part the model
-sees, and it is the entire mechanism by which the skill loads again — a description that
-does not say *when* the rule matters will silence the rule with no error anywhere. What the
-tool drafts comes from your own heading and opening sentence: a starting point, not a
-decision. The patch says so at the top, above the diff.
+The limits here are examples, not recommended universal budgets. Choose them with your
+team. Use a separate baseline with `--provider codex` for Codex; profiles are never added
+together as if both agents loaded the same instructions.
 
-`git apply -R` puts everything back — the tests pin that, because a proposal you cannot
-undo is not a proposal. Your project's memory file and your user one produce **separate
-patches**, applied from separate directories: a project rule demoted into the machine-wide
-skills directory would sit in the always-on prefix of every other project, which is the
-opposite of what this tool measures.
+The comparison shows added, removed and changed blocks with estimated token deltas. It
+uses portable relative paths and hashes instead of instruction text or transcripts.
+`--project-only` excludes personal configuration, including project-local MCP entries
+stored in `~/.claude.json`, so those entries cannot affect a team baseline.
 
-Deletion is the rare case.
-
-Every proposal ships with a **receipt**: cost, measured yield, evidence tier, the sessions
-that justify it, and — for a claim that never fired — the 95% upper bound on how often it
-really could have. A market you can't audit will never survive code review.
-
-## Prevention rules are protected
-
-**A prevention rule has inverted yield: it looks useless precisely because it works.**
-"Never commit a secret" will show a near-zero firing rate. A tool that proposes evicting it
-deserves to be torn apart.
-
-So claims carry a class. `prevention` claims are **protected by default**, excluded from
-eviction on observational yield, and testable only by explicit adversarial probing. This is
-a structural guarantee, not a promise.
-
-## Principles
-
-| | |
+| Exit | Meaning |
 |---|---|
-| **Net-negative by construction** | A cost profiler that costs money to run is incoherent. It prints its own balance. |
-| **Zero API keys** | harnessmeter never authenticates to a model provider. Judgement work is delegated to the agent CLI you already have. |
-| **Stack-agnostic by consequence** | Because it only ever talks to your local agent, Claude Code / Codex / Antigravity are the same code path. |
-| **Local by default** | Reads transcripts and config on disk. No network. Contributing aggregates is opt-in and numeric only — never prompt text, filenames, or repo identifiers. |
-| **Never applies on its own** | It measures and emits a diff. A human merges. |
+| `0` | Analysis completed; any requested budgets passed |
+| `1` | Invalid arguments, incompatible baseline or another error |
+| `2` | At least one requested budget was exceeded; the report is still available |
 
-## Status
+`--max-tokens` accepts an integer ≥ 0. `--max-growth` accepts a percentage ≥ 0 and requires
+`--baseline`. Reading and saving the same baseline path in one run is rejected.
 
-**Early, and honest about it.** The tool runs and produces a real report from real
-transcripts. What ships today is:
+See the [expert and team workflow](docs/expert-workflow.md) for onboarding, CI, JSON fields,
+baseline review and provider coverage. A baseline is a footprint snapshot, **not a full
+configuration or security audit**: MCP schema sizes are unknown and recorded as zero, and
+configuration contents are not compared.
 
-- exact billed-token accounting, including the 5m/1h cache-write split
-- measured always-on prefix, decomposed into harness files vs. residual
-- claim extraction from `CLAUDE.md`, skills, subagents, MCP servers
-- evidence tiers **T0** (presence), **T1** (consequence) and **T2** (judgement via your own agent)
-- lease ledger, dead share, demotion proposals with receipts, terminal + HTML report
-- `--patch`: the demotion as a reviewable, reversible diff — nothing is ever applied
-- a balance line that reports what the run cost and when it pays for itself
+## Explore the report
 
-Not yet: **T4** field randomisation, and the causal half of **T3**. Git history now dates
-each claim by the commit that last touched its own lines, which is the intervention
-registry a natural experiment needs — but identifying an *effect* by staggered
-difference-in-differences takes many machines adopting the same advice on different dates,
-and this tool reads only local files and sends nothing anywhere. That design is one the
-project has promised never to enable, and the roadmap says so rather than implying
-otherwise.
+<p align="center">
+  <img src="assets/report.svg" alt="Illustrative harnessmeter report" width="100%">
+</p>
 
-Per-claim token counts are calibrated estimates at ~3.8 chars/token and are labelled as
-estimates everywhere they appear; session-level figures are exact.
+<p align="center"><sub>Synthetic illustration, not a real measurement or a screenshot of the current interface.</sub></p>
 
-The measurement protocol for the higher tiers will be **pre-registered and published before
-any results are**.
+The self-contained HTML report provides search by label or source, kind and verdict
+filters, token/name sorting, source file and line locations, and proposal receipts. Baseline
+changes and budget results appear alongside the analysis. All claims remain available
+without JavaScript; search, filters and sorting run locally in the browser.
 
-Issues and design critique very welcome — especially on the evidence model and on the
-class inference, which is the part most likely to be wrong on someone else's harness.
+Reports show measured subtotals when telemetry is incomplete. An unknown value is not
+displayed as a free bill or proof that an instruction was unused. Reports and JSON can
+expose local paths and harness structure: review them before sharing.
+
+## What is measured
+
+Per-claim token sizes are estimates at roughly **3.8 characters per token**. Skills contribute
+their estimated frontmatter description to the resident inventory; their full body is
+on-demand. The first-turn prompt, when available, is an **upper bound** on the resident
+prefix because it also contains the opening user message. The unattributed remainder has
+no measured decomposition.
+
+Claude's supported usage records supply token counts and cache-write TTL buckets. The
+pricing model uses `1.25×` for 5-minute writes, `2×` for 1-hour writes and `0.1×` for reads,
+with per-session prefix-write counts derived from those records. Dollar figures are
+**API-equivalent list-price estimates**, not subscription spend; unknown model rates are
+disclosed. Multiplying resident tokens by turns, or assuming only one cache write per
+session, loses this distinction.
+
+Codex's supported cumulative usage records are differenced, with duplicate counters
+ignored. **Codex dollar prices, cache-write TTLs and cache-based savings are unavailable**;
+Claude's economics are never applied to them. Unsupported or incomplete records preserve
+unknown states. See [coverage and limits](docs/expert-workflow.md#coverage-and-limits).
+
+## Evidence before action
+
+| Tier | Evidence | Availability |
+|---|---|---|
+| T0 | File inventory and presence attribution where the session format supports it | Local |
+| T1 | Mechanically observable tool/command activity | Local; provider coverage matters |
+| T2 | Judgement from claim text and a shape-only session digest | Claude profile, explicit opt-in |
+| T3 | Natural experiment | Claim dating by git exists; causal inference is not implemented |
+| T4 | Field randomisation | Planned |
+
+Silence is not proof of uselessness. Verdicts carry the evidence tier and sample behind
+them; applicable zero-observation claims carry a 95% upper bound. Claims are evaluated
+against sessions in scope and dated from git history where possible, otherwise from file
+modification time. Static audits produce no absence-based demotion proposals. Incomplete
+Codex skill and code-mode attribution also prevents absence confidence and demotions.
+
+### T2 uses your quota
+
+For a measured Claude-profile audit, `--t2` asks a detected local agent CLI (`claude` or
+`codex`) to judge eligible unproven claims. Choosing the CLI used for judgement is separate
+from choosing the transcript provider. The Codex **profile** currently rejects `--t2`.
+
+T2 sends claim text and sampled turn counts/tool-call tallies to that CLI and its model
+provider. It does not send transcript message text, full source files or session paths as
+separate context. Claim text can itself contain sensitive information or paths. The local
+agent may also load its own configuration and context. Read the disclosure before
+confirming; `--yes` explicitly skips confirmation. No API key is held by harnessmeter.
+
+Claims requiring wording or tone evidence cannot be judged from that digest and return
+`unjudgeable`. T2 cost and usage are reported when supplied by the CLI; missing figures and
+the CLI's underlying network-call count remain unknown. See [SECURITY](SECURITY.md).
+
+### Demote only after review
+
+On a measured Claude-profile run, `--patch` writes candidate demotions as unified diffs in
+`.harnessmeter/`. It never applies them. Project and user rules produce separate patches,
+with the correct apply directory printed next to each. Codex rejects `--patch`, and
+explicit `--static` rejects both `--patch` and `--t2`.
+
+A proposed demotion moves an always-on section into a skill. **Review the generated skill
+description:** it is the part the agent sees before deciding to load the body. The generated
+heading and opening sentence are a draft, not proof that the new trigger preserves intent.
+Review the diff, apply the printed `git -C <root> apply <patch>` command, and use
+`git apply -R` from the same root to reverse it. Changed source sections, existing target
+skills and unsafe paths are refused.
+
+**Prevention rules are protected.** A rule such as “never commit a secret” can appear quiet
+because it works. Claims classified as prevention are excluded from observational
+demotion; classification is heuristic and should be disputed when wrong.
+
+## Where it fits
+
+Context profilers and instruction linters already exist. Direct comparators include
+[ctxlint](https://github.com/tqakdev/ctxlint),
+[agnix](https://github.com/agent-sh/agnix) and
+[agenteval](https://github.com/lukasmetzler/agenteval). Adjacent tools include
+[ccusage](https://ccusage.com/guide/) for local usage reporting,
+[Promptfoo](https://www.promptfoo.dev/docs/integrations/ci-cd/) for evaluation gates and
+[Langfuse](https://langfuse.com/docs/evaluation/overview) for traces and experiments.
+
+harnessmeter focuses on the combination of local footprint review, conservative session
+evidence, prevention protection and reviewable demotions. That is a product focus, not a
+claim of universal superiority. The [comparison](docs/comparison.md) distinguishes
+documented capabilities from untested hypotheses.
 
 ## Project
 
 | | |
 |---|---|
-| [CONTRIBUTING](CONTRIBUTING.md) | What is most wanted, house rules, how to run the tests |
-| [Measurement dispute](https://github.com/alebgl77/harnessmeter/issues/new?template=measurement_dispute.yml) | The tool gave a verdict you believe is wrong — the most useful issue you can file |
-| [SECURITY](SECURITY.md) | Exactly what it reads, writes and sends; how to report privately |
-| [CHANGELOG](CHANGELOG.md) | What shipped, and the design decisions behind it |
-| [Discussions](https://github.com/alebgl77/harnessmeter/discussions) | Arguments about how yield *should* be measured |
+| [Expert workflow](docs/expert-workflow.md) | Onboarding, CI, JSON and coverage limits |
+| [Comparison](docs/comparison.md) | Direct and adjacent tools, with primary sources |
+| [CONTRIBUTING](CONTRIBUTING.md) | Measurement disputes, contribution priorities and checks |
+| [Measurement dispute](https://github.com/alebgl77/harnessmeter/issues/new?template=measurement_dispute.yml) | Challenge a verdict without publishing private transcripts |
+| [SECURITY](SECURITY.md) | Reads, writes, sharing and T2 disclosure |
+| [CHANGELOG](CHANGELOG.md) | Released changes and unreleased work |
 
-Development:
+Development requires Node ≥ 22.18:
 
 ```sh
-node bin/harnessmeter.js --all   # runs the TypeScript directly, no build
-node --test "test/*.test.ts"     # no test framework — node:test
-npm run typecheck                # tsc --noEmit
-npm run build                    # only needed to produce the publishable package
+node src/cli.ts --static --project-only
+node --test "test/*.test.ts"
+npm ci                          # development tools and compiled build
+npm run typecheck
+npm run build                   # produces the publishable JavaScript
 ```
 
-CI runs the suite on Node 22.18 and 24 across Linux, macOS and Windows **with no install
-step** — if that job ever needs `npm install` to run the tests, the zero-dependency claim
-has broken and the build says so. A separate job packs the tarball, installs it into a
-clean project and runs it, because a package that works from a checkout and fails from
-`node_modules` is the failure mode that matters.
+The tests and source CLI have no install requirement. CI covers Linux, macOS and Windows
+on Node 22.18 and 24, plus compiled-package installation on Node 20 and 24. A source check
+alone does not establish that a new release is ready; the built tarball must also pass.
 
 ## License
 

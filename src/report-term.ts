@@ -1,6 +1,7 @@
 /** Terminal report. The thing people screenshot. */
 
 import type { Analysis } from './types.ts';
+import type { ReportContext } from './report-html.ts';
 import { naiveRatio } from './pricing.ts';
 import { VERSION } from './version.ts';
 
@@ -20,27 +21,45 @@ function bar(frac: number, width = 22): string {
   return '█'.repeat(full) + dim('·'.repeat(width - full));
 }
 
-export function renderTerminal(a: Analysis): string {
+export function renderTerminal(a: Analysis, context: ReportContext = {}): string {
   const L: string[] = [];
   const p = (s = '') => L.push(s);
   const coverage = a.telemetryCoverage;
   const hasBilling = coverage.knownTurns > 0;
-  // A fully compatible legacy corpus keeps its former zero-valued presentation (notably
-  // explicit synthetic turns). Partial corpora need at least one measured prefix session.
-  const hasPrefix =
-    coverage.status === 'full' || (coverage.prefixSessions > 0 && coverage.cacheSessions > 0);
+  const hasSpend = hasBilling && a.spendKnown !== false && a.provider !== 'codex';
+  const hasEconomics = a.cacheEconomicsKnown !== false && a.provider !== 'codex' && coverage.cacheSessions > 0;
+  // Complete aggregate usage can coexist with a missing first-turn measurement.
+  const hasPrefix = coverage.prefixSessions > 0;
+  const canJudgeAbsence = a.sessionCount > 0 && a.evidenceFloorSessions > 0 && a.absenceEvidenceKnown !== false && a.provider !== 'codex';
+  const providerName = a.provider === 'codex' ? 'Codex' : !a.provider && a.claims.some((claim) => claim.provider === 'codex') ? 'Multiple providers' : 'Claude Code';
 
   p();
-  p(`  ${bold('harnessmeter')} ${dim(VERSION)}`);
-  p(
-    `  ${grey(`${n(a.sessionCount)} sessions · ${n(a.turnCount)} turns · ${a.projects.length} project${a.projects.length === 1 ? '' : 's'}`)}`,
-  );
+  p(`  ${bold('harnessmeter')} ${dim(VERSION)} · ${providerName}${a.sessionCount === 0 ? ' · static inventory' : ''}`);
+  p(`  ${grey(`${n(a.sessionCount)} sessions · ${n(a.turnCount)} turns · ${a.projects.length} project${a.projects.length === 1 ? '' : 's'}`)}`);
   p();
 
+  if (context.comparison || context.budget?.checks.length) {
+    p(`  ${amber('BASELINE & BUDGET')}`);
+    const comparison = context.comparison;
+    if (comparison) {
+      const delta = (value: number) => (value > 0 ? '+' : '') + n(value);
+      p(`    ${n(comparison.beforeTokens)} → ${n(comparison.currentTokens)} estimated resident tok · ${delta(comparison.deltaTokens)} tok · ${comparison.growthPercent === null ? 'unbounded from zero' : (comparison.growthPercent > 0 ? '+' : '') + comparison.growthPercent.toLocaleString('en-US', { maximumSignificantDigits: 4 }) + '%'}`);
+      p(`    ${comparison.added.length} added · ${comparison.removed.length} removed · ${comparison.changed.length} changed`);
+      for (const claim of comparison.added) p(`    added   ${claim.path} § ${claim.section} · +${n(claim.tokens)} tok`);
+      for (const claim of comparison.removed) p(`    removed ${claim.path} § ${claim.section} · -${n(claim.tokens)} tok`);
+      for (const change of comparison.changed) p(`    changed ${change.after.path} § ${change.after.section} · ${n(change.before.tokens)} → ${n(change.after.tokens)} tok (${delta(change.deltaTokens)})`);
+      p(`    ${dim('File estimates, not billed savings.')}`);
+    }
+    if (context.budget?.checks.length) {
+      p(`    Budget ${context.budget.passed ? green('PASS') : rust('FAIL')}`);
+      for (const check of context.budget.checks) p(`    ${check.metric}: ${check.actual === null ? 'unbounded from zero' : check.actual} / limit ${check.limit} · ${check.passed ? 'PASS' : 'FAIL'}${check.reason ? ' · ' + check.reason : ''}`);
+    }
+    p();
+  }
   // ---- billed telemetry --------------------------------------------------------
   const billedStatus =
     coverage.status === 'full'
-      ? 'exact, read from transcripts'
+      ? 'measured tokens, read from transcripts'
       : coverage.status === 'partial'
         ? `measured subtotal · ${coverage.knownTurns}/${coverage.totalTurns} turns`
         : `unknown · ${coverage.knownTurns}/${coverage.totalTurns} turns have compatible usage`;
@@ -49,18 +68,20 @@ export function renderTerminal(a: Analysis): string {
   const b = a.billedTokens;
   if (hasBilling) {
     p(`    input (uncached)      ${n(b.input).padStart(12)}`);
-    p(`    cache reads  ${dim('0.1x')}     ${n(b.cacheRead).padStart(12)}`);
-    p(`    cache writes ${dim('1.25x')}    ${n(b.cacheWrite5m).padStart(12)}`);
-    p(`    cache writes ${dim('2x')}       ${n(b.cacheWrite1h).padStart(12)}`);
+    p(`    cache reads ${hasEconomics ? dim(' 0.1x') : '     '}     ${n(b.cacheRead).padStart(12)}`);
+    if (hasEconomics) {
+      p(`    cache writes ${dim('1.25x')}    ${n(b.cacheWrite5m).padStart(12)}`);
+      p(`    cache writes ${dim('2x')}       ${n(b.cacheWrite1h).padStart(12)}`);
+    } else p(`    cache writes                 ${amber('unknown')}`);
     p(`    output                ${n(b.output).padStart(12)}`);
-    p(`    ${bold('api-equivalent')}        ${bold('$' + a.spendUsd.toFixed(2))}${coverage.status === 'partial' ? dim('  measured subtotal') : ''}`);
-    p(`    ${dim('list-price value of these measured tokens — not an invoice')}`);
+    p(`    ${bold('api-equivalent')}        ${hasSpend ? bold('$' + a.spendUsd.toFixed(2)) : amber('unknown')}${hasSpend && coverage.status === 'partial' ? dim('  measured subtotal') : ''}`);
+    p(`    ${dim(hasSpend ? 'list-price value of these measured tokens — not an invoice' : 'dollar value unavailable; measured token counts remain visible')}`);
   } else {
     p(`    input / cache / output       ${amber('unknown')}`);
     p(`    ${bold('api-equivalent')}              ${amber('unknown')}`);
-    p(`    ${dim('the transcript has assistant activity but no compatible usage fields')}`);
+    p(`    ${dim(a.sessionCount === 0 ? 'no sessions supplied; inventory sizes are estimates' : 'the transcript has assistant activity but no compatible usage fields')}`);
   }
-  if (hasBilling && a.unknownModels.length) {
+  if (hasSpend && a.unknownModels.length) {
     p(
       `    ${amber('estimated')} ${dim(`— ${a.unknownModels.length} unpriced model${a.unknownModels.length === 1 ? '' : 's'} billed at a fallback rate:`)}`,
     );
@@ -69,22 +90,21 @@ export function renderTerminal(a: Analysis): string {
   p();
 
   // ---- prefix ------------------------------------------------------------------
-  const ratio = hasPrefix
+  const ratio = hasPrefix && hasEconomics
     ? naiveRatio(a.medianTurnsPerSession, a.cacheTtl, a.medianPrefixWrites)
     : undefined;
-  const prefixStatus = coverage.status === 'full'
-    ? 'first-turn prompt — an upper bound'
-    : hasPrefix
-      ? `measured in ${coverage.prefixSessions}/${a.sessionCount} complete sessions — an upper bound`
-      : 'unknown — no complete telemetry session';
+  const prefixStatus = hasPrefix
+    ? `measured in ${coverage.prefixSessions}/${a.sessionCount} sessions — an upper bound`
+    : 'unknown — no measured first-turn prompt';
   p(`  ${amber('ALWAYS-ON PREFIX')}  ${dim(prefixStatus)}`);
   p();
-  if (hasPrefix && ratio !== undefined) {
+  if (hasPrefix) {
     p(`    median first turn     ${n(a.medianPrefixTokens).padStart(12)} tok`);
     p(`    ${dim('includes the opening user message, which cannot be separated')}`);
     p(`    ${grey('├─ harness files')}      ${grey(n(a.harnessEstTokens).padStart(12) + ' tok  (estimated)')}`);
     p(`    ${grey('└─ unattributed')}       ${grey(n(a.residualTokens).padStart(12) + ' tok  (composition unknown)')}`);
     p();
+    if (ratio !== undefined) {
     p(`    ${dim(`at ${a.medianTurnsPerSession} turns/session, prompt caching makes the prefix`)}`);
     // Once a session writes its prefix often enough, caching stops being a discount. Rare,
     // but printing "0.9x cheaper" would be nonsense rather than a small number.
@@ -93,12 +113,13 @@ export function renderTerminal(a: Analysis): string {
       : `${(1 / ratio).toFixed(1)}x MORE than tokens x turns would suggest.`)}`);
     p(`    ${dim(`measured: ${a.medianPrefixWrites} prefix write${a.medianPrefixWrites === 1 ? '' : 's'} per session at the ${a.cacheTtl} rate,`)}`);
     p(`    ${dim('not one — cache entries expire and compaction rebuilds the prompt.')}`);
+    } else p(`    ${dim('cache economics and proposal savings are unknown for this provider.')}`);
   } else {
     p(`    median first turn          ${amber('unknown')}`);
     p(`    ${grey('├─ harness files')}      ${grey(n(a.harnessEstTokens).padStart(12) + ' tok  (estimated)')}`);
     p(`    ${grey('└─ unattributed')}             ${grey('unknown')}`);
     p();
-    p(`    ${dim('cache writes, TTL and prompt-cache ratio are unknown.')}`);
+    p(`    ${dim('cache economics and prompt-cache ratio are unknown.')}`);
   }
   p();
 
@@ -110,7 +131,7 @@ export function renderTerminal(a: Analysis): string {
   p();
   const pct = a.deadSharePct;
   const col = pct > 50 ? rust : pct > 25 ? amber : green;
-  p(`    ${col(bar(pct / 100))}  ${bold(pct.toFixed(0) + '%')}`);
+  p(canJudgeAbsence ? `    ${col(bar(pct / 100))}  ${bold(pct.toFixed(0) + '%')}` : `    ${grey('not evaluated')}`);
   p(`    ${grey(`of ${n(a.harnessEstTokens)} tok across ${attributable.length} claims`)}`);
   p();
   if (hasPrefix) {
@@ -126,6 +147,7 @@ export function renderTerminal(a: Analysis): string {
   // printing the size of the whole scan beside it would advertise a resolution most of
   // the ledger does not have.
   const floorN = a.evidenceFloorSessions;
+  if (canJudgeAbsence) {
   p(
     `    ${dim(
       floorN === a.sessionCount
@@ -142,6 +164,9 @@ export function renderTerminal(a: Analysis): string {
         a.cost.tier === 'T0/T1/T2' ? '— the T2 verdicts above stand on their own.' : '— rerun with --all, or come back later.',
       )}`,
     );
+  }
+  } else {
+    p(`    ${dim(a.sessionCount === 0 ? 'Behavioral evidence not evaluated. No sessions were supplied.' : 'Absence is not evaluated: this telemetry cannot prove a claim is unnecessary.')}`);
   }
   p();
 
@@ -164,6 +189,7 @@ export function renderTerminal(a: Analysis): string {
         : amber('■');
       const tok = claim.alwaysOnTokens > 0 ? `${n(claim.alwaysOnTokens)} tok` : dim('runtime');
       p(`    ${mark} ${claim.label.slice(0, 46).padEnd(46)} ${tok.padStart(11)}  ${dim(ev.tier.padEnd(4))} ${grey(ev.verdict)}`);
+      p(`      ${dim(claim.source.file + (claim.source.startLine > 0 ? ':' + claim.source.startLine : ''))}`);
     }
     p();
     p(`    ${green('■')} ${dim('load-bearing')}   ${amber('■')} ${dim('unproven')}   ${rust('■')} ${dim('ballast')}   ${green('◆')} ${dim('protected (prevention)')}`);
@@ -171,14 +197,14 @@ export function renderTerminal(a: Analysis): string {
   }
 
   // ---- proposals ---------------------------------------------------------------
-  const top = a.proposals.slice(0, 5);
+  const top = a.proposals;
   if (top.length) {
     p(`  ${amber('PROPOSALS')}  ${dim('nothing is applied automatically')}`);
     p();
     for (const pr of top) {
       const verb = pr.action === 'demote' ? 'demote to on-demand' : pr.action === 'evict' ? 'remove' : 'investigate';
       p(`    ${bold(pr.label.slice(0, 56))}`);
-      const saving = coverage.cacheSessions === 0
+      const saving = !hasEconomics
         ? amber('  saving unknown')
         : pr.savingPerSession > 0
           ? green(`  saves ~${n(pr.savingPerSession)} eff tok/session`)
@@ -190,7 +216,7 @@ export function renderTerminal(a: Analysis): string {
             `receipt: ${pr.receipt.tier} · ${pr.receipt.firedIn}/${pr.receipt.sessions} sessions · class ${pr.receipt.class} · ` +
             `confidence ${pr.receipt.confidence}` +
             (pr.receipt.confidenceSource === 't2-judge' ? ` · T2 judge` : ``) +
-            (pr.receipt.firedIn === 0 && bound > 0
+            (pr.receipt.confidenceSource === 'zero-hit-bound' && pr.receipt.sessions > 0 && pr.receipt.firedIn === 0 && bound > 0
               ? ` · loads <${bound < 10 ? bound.toFixed(1) : bound.toFixed(0)}% of the time (95%)`
               : ``),
         )}`,
@@ -200,7 +226,7 @@ export function renderTerminal(a: Analysis): string {
   } else {
     p(`  ${amber('PROPOSALS')}`);
     p();
-    p(`    ${green('none')} ${dim('— no always-on claim was found dead at T0/T1.')}`);
+    p(`    ${grey('none')} ${dim(a.sessionCount === 0 ? '— behavioral evidence not evaluated.' : '— no supported changes from the available evidence.')}`);
     p();
   }
 
@@ -225,8 +251,8 @@ export function renderTerminal(a: Analysis): string {
   } else {
     p(`    analysis cost         ${green('0 tokens')} ${dim('(no model call, no network)')}`);
   }
-  p(`    proposals would save  ${coverage.cacheSessions === 0 ? amber('saving unknown') : saved > 0 ? green(`~${n(saved)} eff tok/session`) : dim('—')}`);
-  if (a.cost.tokens !== null && a.cost.tokens > 0 && saved > 0) {
+  p(`    proposals would save  ${!hasEconomics ? amber('saving unknown') : saved > 0 ? green(`~${n(saved)} eff tok/session`) : dim('—')}`);
+  if (hasEconomics && a.cost.tokens !== null && a.cost.tokens > 0 && saved > 0) {
     const payback = a.cost.tokens / saved;
     p(
       `    ${dim(`pays for itself after ${payback < 1 ? 'the first session' : `~${Math.ceil(payback)} sessions`}`)}`,

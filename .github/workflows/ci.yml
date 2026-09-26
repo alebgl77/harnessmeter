@@ -37,15 +37,21 @@ jobs:
       - name: smoke — help
         run: node bin/harnessmeter.js --help
 
-      - name: smoke — no transcripts exits cleanly
+      - name: smoke — no transcripts produces a static audit
         shell: bash
         run: |
-          set +e
-          out=$(CLAUDE_HOME="$(mktemp -d)" node bin/harnessmeter.js 2>&1)
-          code=$?
-          echo "$out"
-          if [ "$code" -ne 1 ]; then echo "expected exit 1, got $code"; exit 1; fi
-          echo "$out" | grep -qi "no claude code transcripts" || { echo "missing guidance"; exit 1; }
+          out=$(CLAUDE_HOME="$(mktemp -d)" node bin/harnessmeter.js --project-only --json)
+          printf '%s\n' "$out" | node -e '
+            const assert = require("node:assert/strict");
+            const audit = JSON.parse(require("node:fs").readFileSync(0, "utf8"));
+            assert.equal(audit.mode, "static");
+            assert.equal(audit.sessionCount, 0);
+            assert.equal(audit.telemetryCoverage.status, "none");
+            assert.equal(audit.spendKnown, false);
+            assert.equal(audit.evidenceFloorSessions, 0);
+            assert.deepEqual(audit.proposals, []);
+            console.log("static fallback verified: no measured usage, spend or demotions");
+          '
 
   version-guard:
     name: version guard rejects old node
@@ -134,14 +140,21 @@ jobs:
           npm install /tmp/harnessmeter.tgz
           ./node_modules/.bin/harnessmeter --help
 
-      - name: no transcripts still exits cleanly from the installed package
+      - name: no transcripts produces a static audit from the installed package
         run: |
           cd /tmp/consumer
-          set +e
-          out=$(CLAUDE_HOME="$(mktemp -d)" ./node_modules/.bin/harnessmeter 2>&1)
-          code=$?
-          echo "$out"
-          if [ "$code" -ne 1 ]; then echo "expected exit 1, got $code"; exit 1; fi
+          out=$(CLAUDE_HOME="$(mktemp -d)" ./node_modules/.bin/harnessmeter --project-only --json)
+          printf '%s\n' "$out" | node -e '
+            const assert = require("node:assert/strict");
+            const audit = JSON.parse(require("node:fs").readFileSync(0, "utf8"));
+            assert.equal(audit.mode, "static");
+            assert.equal(audit.sessionCount, 0);
+            assert.equal(audit.telemetryCoverage.status, "none");
+            assert.equal(audit.spendKnown, false);
+            assert.equal(audit.evidenceFloorSessions, 0);
+            assert.deepEqual(audit.proposals, []);
+            console.log("packaged static fallback verified: no measured usage, spend or demotions");
+          '
 
       - name: the tarball must not contain TypeScript sources
         run: |

@@ -68,6 +68,59 @@ function claim(over: Partial<Claim> = {}): Claim {
   };
 }
 
+test('provider isolation applies to T0/T1 populations and shared T2 eligibility', () => {
+  const claude = claim({ id: 'claude' });
+  const codex = claim({ id: 'codex', provider: 'codex' });
+  const s = { ...session('p', [turn(['exec_command'], ['npm test'])]), provider: 'codex' as const };
+  const evidence = runEvidence({ claims: [claude, codex], sessions: [s], bodies: new Map([[claude.id, 'Always run npm test'], [codex.id, 'Always run npm test']]), currentProject: 'p' });
+  assert.equal(evidence.get(claude.id)?.observedIn, 0);
+  assert.equal(evidence.get(claude.id)?.verdict, 'unproven');
+  assert.equal(evidence.get(codex.id)?.observedIn, 1);
+  assert.equal(evidence.get(codex.id)?.verdict, 'load-bearing');
+  assert.equal(eligibleSessionsForClaim(claude, [s], 'p').pool, 0);
+  assert.equal(eligibleSessionsForClaim(codex, [s], 'p').pool, 1);
+  assert.equal(eligibleSessionsForClaim(codex, [s], 'other').pool, 0);
+});
+
+test('Codex absence has no statistical bound at any sample size or evidence tier', () => {
+  const claims = [
+    claim({ id: 'skill', provider: 'codex', kind: 'skill', label: 'skill/testing' }),
+    claim({ id: 'subagent', provider: 'codex', kind: 'subagent', label: 'agent/reviewer' }),
+    claim({ id: 'mcp', provider: 'codex', kind: 'mcp-server', label: 'mcp/search' }),
+    claim({ id: 'prose', provider: 'codex' }),
+    claim({ id: 'command', provider: 'codex', kind: 'command' }),
+    claim({ id: 'unknown', provider: 'codex' }),
+    claim({ id: 'protected', provider: 'codex', protected: true }),
+  ];
+  const bodies = new Map([['prose', 'Always run npm test'], ['protected', 'Always run npm test']]);
+  for (const size of [0, 1, 5, 200]) {
+    const sessions = Array.from({ length: size }, () => ({ ...session('p', [turn()]), provider: 'codex' as const }));
+    const evidence = runEvidence({ claims, sessions, bodies, currentProject: 'p' });
+    for (const c of claims) {
+      const ev = evidence.get(c.id)!;
+      assert.equal(ev.observedIn, size);
+      assert.equal(ev.verdict, c.protected ? 'protected' : 'unproven');
+      assert.equal(ev.absenceEvidenceKnown, false);
+      assert.equal(ev.confidence, undefined);
+      assert.equal(ev.confidenceSource, undefined);
+      assert.doesNotMatch(ev.note, /rules out|95%/);
+      assert.match(ev.note, /attribution is incomplete/);
+    }
+  }
+});
+
+test('Codex positive occurrences remain visible without implying observable absence', () => {
+  const c = claim({ provider: 'codex' });
+  const sessions = [{ ...session('p', [turn(['exec_command'], ['npm test'])]), provider: 'codex' as const }];
+  const ev = runEvidence({ claims: [c], sessions, bodies: new Map([[c.id, 'Always run npm test']]) }).get(c.id)!;
+  assert.equal(ev.verdict, 'load-bearing');
+  assert.equal(ev.firedIn, 1);
+  assert.equal(ev.observedIn, 1);
+  assert.equal(ev.absenceEvidenceKnown, false);
+  assert.match(ev.note, /observed in 1 of 1 sessions/);
+  assert.doesNotMatch(ev.note, /rules out|95%/);
+});
+
 function fakeT2Agent(
   failMatch = '',
   confidence: unknown = 'medium',

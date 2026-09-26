@@ -4,6 +4,8 @@ import type { DateSource } from './history.ts';
 
 export type { DateSource };
 
+export type Provider = 'claude' | 'codex';
+
 /** What a model charged us for a single assistant turn. Read, never estimated. */
 export type TurnUsage = {
   inputTokens: number;
@@ -37,6 +39,10 @@ export type Turn = {
 
 export type Session = {
   id: string;
+  /** Omitted means Claude for compatibility with existing callers. */
+  provider?: Provider;
+  /** Explicit false means Claude TTL/write economics cannot be inferred. */
+  cacheEconomicsKnown?: boolean;
   project: string;
   cwd?: string;
   gitBranch?: string;
@@ -107,6 +113,8 @@ export type Verdict = 'load-bearing' | 'unproven' | 'ballast' | 'protected';
 
 export type Claim = {
   id: string;
+  /** Only sessions from this provider can testify; omitted means Claude. */
+  provider?: Provider;
   label: string;
   kind: ClaimKind;
   /**
@@ -162,6 +170,8 @@ export type ClaimEvidence = {
   /** Number of sessions in which this claim had an observable consequence. */
   firedIn: number;
   observedIn: number;
+  /** Explicit false forbids statistical absence bounds despite any observed occurrences. */
+  absenceEvidenceKnown?: boolean;
   /** Confidence assigned to this evidence when it did not come from a zero-hit bound. */
   confidence?: 'high' | 'medium' | 'low';
   /** Whether confidence came from corpus statistics or the T2 judge. */
@@ -194,6 +204,14 @@ export type Proposal = {
 
 export type Analysis = {
   scannedAt: string;
+  /** Absent only for a mixed-provider programmatic analysis. */
+  provider?: Provider;
+  /** False means cache write/TTL fields are placeholders, not measurements. */
+  cacheEconomicsKnown?: boolean;
+  /** False means spendUsd is an unavailable-value placeholder, not a free bill. */
+  spendKnown?: boolean;
+  /** False means no statistical absence resolution; floor values are 0/100 placeholders. */
+  absenceEvidenceKnown?: boolean;
   projects: string[];
   sessionCount: number;
   turnCount: number;

@@ -12,6 +12,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import os from 'node:os';
 import { createHash } from 'node:crypto';
 import type { Claim, ClaimClass, ClaimKind, Loading } from './types.ts';
 import { claudeHome } from './transcript.ts';
@@ -33,19 +34,26 @@ export type HarnessFileSnapshot = {
 export type HarnessSnapshot = Map<string, HarnessFileSnapshot>;
 
 export type HarnessScanOptions = {
+  /** Instruction dialect to discover. Existing callers retain Claude discovery. */
+  provider?: 'claude' | 'codex';
+  /** False scans repository-owned files only, without home or installed-plugin state. */
+  includeUser?: boolean;
   /** Test seam and embedders' filesystem seam. Must return the file's raw bytes. */
   readFile?: (file: string) => Buffer;
 };
 
 type ScanContext = {
   snapshot: HarnessSnapshot;
+  byFile: Map<string, HarnessFileSnapshot>;
   missing: Set<string>;
   readFile: (file: string) => Buffer;
+  allowedRoot?: string;
 };
 
 function scanContext(options: HarnessScanOptions = {}): ScanContext {
   return {
     snapshot: new Map(),
+    byFile: new Map(),
     missing: new Set(),
     readFile: options.readFile ?? ((file) => fs.readFileSync(file)),
   };
@@ -53,9 +61,17 @@ function scanContext(options: HarnessScanOptions = {}): ScanContext {
 
 function snapshotFile(file: string, context: ScanContext): HarnessFileSnapshot | undefined {
   const absolute = path.resolve(file);
+  if (context.allowedRoot && !withinRoot(absolute, context.allowedRoot)) return undefined;
   const cached = context.snapshot.get(absolute);
   if (cached) return cached;
   if (context.missing.has(absolute)) return undefined;
+  const identity = fileKey(absolute);
+  const sameFile = context.byFile.get(identity);
+  if (sameFile) {
+    const alias = { ...sameFile, path: absolute };
+    context.snapshot.set(absolute, alias);
+    return alias;
+  }
 
   try {
     const bytes = context.readFile(absolute);
@@ -73,6 +89,7 @@ function snapshotFile(file: string, context: ScanContext): HarnessFileSnapshot |
       mtimeMs,
     };
     context.snapshot.set(absolute, entry);
+    context.byFile.set(identity, entry);
     return entry;
   } catch {
     // Cache failures too: one unreadable path must not be retried by every extractor.
@@ -329,7 +346,7 @@ export function extractImportClaims(
   // `seen` holds files whose prose has been claimed. The root goes in so a chain that
   // imports its way back to it stops; every target goes in below, before it is read, which
   // is what keeps a file resident once however many memory files name it.
-  if (depth === 0) seen.add(path.resolve(file).toLowerCase());
+  if (depth === 0) seen.add(fileKey(file));
 
   const text = readText(file, context);
   if (text === undefined) return [];
@@ -350,7 +367,7 @@ export function extractImportClaims(
     if (!target) continue;
     // Resident once, however many memory files name it. The guard below only stops
     // re-entry, so the target is claimed here before anything reads it twice.
-    const targetKey = path.resolve(target).toLowerCase();
+    const targetKey = fileKey(target);
     if (seen.has(targetKey)) continue;
     seen.add(targetKey);
     const shown = `${path.basename(file)} @${path.basename(target)}`;
@@ -524,7 +541,7 @@ export function extractPluginClaims(home: string, cwd?: string, context?: ScanCo
       const servers = readJson(path.join(root, '.mcp.json'), context)?.mcpServers;
       if (servers && typeof servers === 'object') {
         for (const server of Object.keys(servers)) {
-          claims.push(mcpClaim(server, path.join(root, '.mcp.json')));
+          claims.push(mcpClaim(server, path.join(root, '.mcp.json'), 'user'));
         }
       }
     }
@@ -537,30 +554,38 @@ export function extractPluginClaims(home: string, cwd?: string, context?: ScanCo
  * block of context — but their size is only knowable at runtime, so we do not fabricate
  * a token figure. We record the server and let the evidence layer report usage.
  */
-export function extractMcpClaims(cwd: string, context?: ScanContext): Claim[] {
-  const servers = new Set<string>();
-  const push = (obj: unknown) => {
-    if (obj && typeof obj === 'object') for (const k of Object.keys(obj)) servers.add(k);
+export function extractMcpClaims(cwd: string, context?: ScanContext, includeUser = true): Claim[] {
+  const servers = new Map<string, Claim>();
+  const push = (obj: unknown, file: string, scope: 'project' | 'user') => {
+    if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return;
+    for (const name of Object.keys(obj)) {
+      if (!servers.has(name)) servers.set(name, mcpClaim(name, file, scope));
+    }
   };
 
-  push(readJson(path.join(cwd, '.mcp.json'), context)?.mcpServers);
-  push(readJson(path.join(claudeHome(), 'settings.json'), context)?.mcpServers);
-
-  const globalCfg = readJson(path.join(path.dirname(claudeHome()), '.claude.json'), context);
-  push(globalCfg?.mcpServers);
+  // Claude's precedence is local > project > user > plugin. Local definitions live
+  // in the user's .claude.json, so project-only audits deliberately exclude that state.
+  const globalFile = path.join(path.dirname(claudeHome()), '.claude.json');
+  const globalCfg = includeUser ? readJson(globalFile, context) : undefined;
   const projEntry = globalCfg?.projects?.[cwd] ?? globalCfg?.projects?.[path.resolve(cwd)];
-  push(projEntry?.mcpServers);
-
-  return [...servers].map((name) => mcpClaim(name));
+  push(projEntry?.mcpServers, globalFile, 'project');
+  const projectFile = path.join(cwd, '.mcp.json');
+  push(readJson(projectFile, context)?.mcpServers, projectFile, 'project');
+  if (includeUser) {
+    push(globalCfg?.mcpServers, globalFile, 'user');
+    const settingsFile = path.join(claudeHome(), 'settings.json');
+    push(readJson(settingsFile, context)?.mcpServers, settingsFile, 'user');
+  }
+  return [...servers.values()];
 }
 
 /** One MCP server, from wherever it was declared. Size is runtime-only, so it is not faked. */
-function mcpClaim(name: string, file = '.mcp.json'): Claim {
+function mcpClaim(name: string, file = '.mcp.json', scope: 'project' | 'user' = 'project'): Claim {
   return {
     id: `mcp:${name}`,
     label: `mcp/${name}`,
     kind: 'mcp-server' as ClaimKind,
-    scope: 'project' as const,
+    scope,
     class: 'knowledge' as ClaimClass,
     classInferred: true,
     loading: 'always-on' as Loading,
@@ -581,39 +606,122 @@ export type HarnessScan = {
   bodies: Map<string, string>;
 };
 
-export function scanHarness(cwd: string, options: HarnessScanOptions = {}): HarnessScan {
-  const context = scanContext(options);
-  const home = claudeHome();
-  const projectMd = path.join(cwd, 'CLAUDE.md');
-  const projectLocalMd = path.join(cwd, 'CLAUDE.local.md');
-  const userMd = path.join(home, 'CLAUDE.md');
+/** Root-to-cwd chain, bounded by the nearest Git root (including worktree .git files).
+ * Without a Git marker, only cwd is project-owned. Ancestors outside the repository,
+ * runtime conditional rules, managed settings and custom TOML paths are not inferred.
+ */
+function projectDirectories(cwd: string): string[] {
+  const directories: string[] = [];
+  let directory = path.resolve(cwd);
+  while (true) {
+    directories.unshift(directory);
+    if (fs.existsSync(path.join(directory, '.git'))) return directories;
+    const parent = path.dirname(directory);
+    if (parent === directory) return [path.resolve(cwd)];
+    directory = parent;
+  }
+}
 
-  // One seen-set across every root: a file imported by both CLAUDE.md and CLAUDE.local.md
-  // is resident once, and counting it twice would inflate the harness estimate.
-  const imported = new Set<string>();
+function fileKey(file: string): string {
+  let resolved = path.resolve(file);
+  try { resolved = fs.realpathSync.native(resolved); } catch { /* missing path */ }
+  return process.platform === 'win32' ? resolved.toLowerCase() : resolved;
+}
+
+/** Check both lexical and resolved containment so a project symlink cannot import home state. */
+function withinRoot(file: string, root: string): boolean {
+  const contains = (candidate: string, base: string) => {
+    const relative = path.relative(base, candidate);
+    return relative !== '..' && !relative.startsWith('..' + path.sep) && !path.isAbsolute(relative);
+  };
+  return contains(path.resolve(file), path.resolve(root)) && contains(fileKey(file), fileKey(root));
+}
+
+export function scanHarness(cwd: string, options: HarnessScanOptions = {}): HarnessScan {
+  cwd = path.resolve(cwd);
+  const context = scanContext(options);
+  const provider = options.provider ?? 'claude';
+  const includeUser = options.includeUser !== false;
+  const directories = projectDirectories(cwd);
+  if (!includeUser) context.allowedRoot = directories[0];
+  const roots: { file: string; scope: 'project' | 'user' }[] = [];
+  const claims: Claim[] = [];
   const ids = new Map<string, number>();
 
-  const claims: Claim[] = [
-    ...extractProseClaims(projectMd, 'project', undefined, ids, context),
-    ...extractImportClaims(projectMd, 'project', imported, 0, ids, context),
-    ...extractProseClaims(projectLocalMd, 'project', undefined, ids, context),
-    ...extractImportClaims(projectLocalMd, 'project', imported, 0, ids, context),
-    ...extractProseClaims(userMd, 'user', undefined, ids, context),
-    ...extractImportClaims(userMd, 'user', imported, 0, ids, context),
-    ...extractSkillClaims(path.join(cwd, '.claude', 'skills'), 'project', undefined, context),
-    ...extractSkillClaims(path.join(home, 'skills'), 'user', undefined, context),
-    ...extractAgentClaims(path.join(cwd, '.claude', 'agents'), 'project', undefined, context),
-    ...extractAgentClaims(path.join(home, 'agents'), 'user', undefined, context),
-    ...extractCommandClaims(path.join(cwd, '.claude', 'commands'), 'project', undefined, '', 0, context),
-    ...extractCommandClaims(path.join(home, 'commands'), 'user', undefined, '', 0, context),
-    ...extractPluginClaims(home, cwd, context),
-    ...extractMcpClaims(cwd, context),
-  ];
+  if (provider === 'codex') {
+    const codexHome = process.env.CODEX_HOME ?? path.join(os.homedir(), '.codex');
+    const select = (directory: string, scope: 'project' | 'user') => {
+      for (const name of ['AGENTS.override.md', 'AGENTS.md']) {
+        const file = path.join(directory, name);
+        // An empty override does not mask a nonempty AGENTS.md. Use the same immutable
+        // bytes for this decision and extraction, even if another process edits it.
+        if (readText(file, context)?.trim()) {
+          roots.push({ file, scope });
+          break;
+        }
+      }
+    };
+    if (includeUser) select(codexHome, 'user');
+    for (const directory of directories) select(directory, 'project');
+  } else {
+    for (const directory of directories) {
+      for (const name of ['CLAUDE.md', path.join('.claude', 'CLAUDE.md'), 'CLAUDE.local.md']) {
+        roots.push({ file: path.join(directory, name), scope: 'project' });
+      }
+    }
+    if (includeUser) roots.push({ file: path.join(claudeHome(), 'CLAUDE.md'), scope: 'user' });
+  }
+
+  // Reserve every instruction root before following imports. Otherwise a root that
+  // another root imports is counted once as an import and again as a direct source.
+  const imported = new Set(roots.map(({ file }) => fileKey(file)));
+  const loaded = new Set<string>();
+  for (const { file, scope } of roots) {
+    const key = fileKey(file);
+    if (loaded.has(key)) continue;
+    loaded.add(key);
+    const display = scope === 'project' ? path.relative(cwd, file).split(path.sep).join('/') : undefined;
+    claims.push(...extractProseClaims(file, scope, display, ids, context));
+    if (provider === 'claude') claims.push(...extractImportClaims(file, scope, imported, 0, ids, context));
+  }
+
+  if (provider === 'codex') {
+    for (const directory of [...directories].reverse()) {
+      claims.push(...extractSkillClaims(path.join(directory, '.agents', 'skills'), 'project', undefined, context));
+    }
+    if (includeUser) claims.push(...extractSkillClaims(path.join(os.homedir(), '.agents', 'skills'), 'user', undefined, context));
+  } else {
+    const home = claudeHome();
+    claims.push(...extractSkillClaims(path.join(cwd, '.claude', 'skills'), 'project', undefined, context));
+    claims.push(...extractAgentClaims(path.join(cwd, '.claude', 'agents'), 'project', undefined, context));
+    claims.push(...extractCommandClaims(path.join(cwd, '.claude', 'commands'), 'project', undefined, '', 0, context));
+    // Higher precedence definitions must own the MCP id before plugin claims arrive.
+    claims.push(...extractMcpClaims(cwd, context, includeUser));
+    if (includeUser) {
+      claims.push(...extractSkillClaims(path.join(home, 'skills'), 'user', undefined, context));
+      claims.push(...extractAgentClaims(path.join(home, 'agents'), 'user', undefined, context));
+      claims.push(...extractCommandClaims(path.join(home, 'commands'), 'user', undefined, '', 0, context));
+      claims.push(...extractPluginClaims(home, cwd, context));
+    }
+  }
   // Ids address a claim across runs, and everything downstream keys evidence by id. Two
   // claims sharing one is silent double-counting on one side and a lost verdict on the
   // other, so the invariant is enforced here rather than assumed.
   const byId = new Map<string, Claim>();
-  for (const c of claims) if (!byId.has(c.id)) byId.set(c.id, c);
+  const sources = new Set<string>();
+  for (const c of claims) {
+    c.provider = provider;
+    const source = `${c.kind}:${fileKey(c.source.file)}:${c.source.startLine}:${c.source.endLine}`;
+    if (c.kind !== 'mcp-server' && sources.has(source)) continue;
+    sources.add(source);
+    if (c.kind === 'mcp-server' && byId.has(c.id)) continue;
+    if (provider === 'claude' && byId.has(c.id)) continue;
+    // Codex permits two distinct skills with the same name. Retain both definitions;
+    // unique ids prevent the evidence and body maps from silently losing one.
+    const base = c.id;
+    for (let n = 1; byId.has(c.id); n++) c.id = `${base}~${n}`;
+    byId.set(c.id, c);
+  }
   const unique = [...byId.values()];
 
   const files = [...new Set(unique.map((c) => c.source.file))];
@@ -643,7 +751,11 @@ function readJson(file: string, context?: ScanContext): any {
 
 function safeReaddir(dir: string): string[] {
   try {
-    return fs.readdirSync(dir, { withFileTypes: true }).filter((d) => d.isDirectory()).map((d) => d.name);
+    return fs.readdirSync(dir, { withFileTypes: true }).filter((d) => {
+      if (d.isDirectory()) return true;
+      if (!d.isSymbolicLink()) return false;
+      try { return fs.statSync(path.join(dir, d.name)).isDirectory(); } catch { return false; }
+    }).map((d) => d.name).sort();
   } catch {
     return [];
   }
