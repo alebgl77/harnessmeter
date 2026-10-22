@@ -30,6 +30,9 @@ These changes are available from source and have not been published as a new npm
 
 ### Changed
 
+- The README now separates published npm `0.3.0` from source-only provider, baseline
+  and CI-budget features. Package copy describes estimated footprint and optional
+  model-assisted review without implying exact per-line pricing or a new publication.
 - Claude instruction discovery follows a conservative Git-root-to-working-directory
   chain, including `.claude/CLAUDE.md`; provider surfaces stay separate.
 - Codex's incomplete skill/code-mode attribution cannot support absence confidence or
@@ -48,9 +51,9 @@ These changes are available from source and have not been published as a new npm
   than this entry used to claim. Git now serves as the intervention registry: a claim is
   dated by the commit that last touched its own lines. The causal half — staggered
   difference-in-differences — needs many units adopting the same advice on different dates,
-  and that means data across many machines. harnessmeter reads only local files and sends
-  nothing anywhere, so the design that would identify the effect is one this tool has
-  promised never to enable. What remains reachable on one machine is a before-and-after
+  and that means data across many machines. T0/T1 analysis reads local files without
+  collecting cross-user telemetry; optional T2 review does not provide that dataset.
+  What remains reachable on one machine is a before-and-after
   comparison with a placebo check on claims that did not change, reported with its interval
   and its sample. That is worth building when there is history to validate it against.
 - **T4 — field randomisation.** Vary the harness on runs that were going to happen anyway,
