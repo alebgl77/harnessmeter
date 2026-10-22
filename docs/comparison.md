@@ -5,6 +5,10 @@ linked below. These are documented capabilities, not independently benchmarked a
 speed, adoption or outcome claims. Tools and supported formats change; check their current
 documentation before choosing a workflow.
 
+Harnessmeter's Codex profile, static audits, baselines and CI budgets described here
+are available from the unreleased source branch. The published npm `0.3.0` package
+provides the narrower Claude Code workflow; see [distribution choices](../README.md#choose-a-distribution).
+
 ## Direct comparators
 
 | Tool | Documented focus | Relationship to harnessmeter |

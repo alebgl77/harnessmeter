@@ -19,7 +19,21 @@
 skills, estimates their resident footprint, and uses compatible local sessions to show
 what evidence supports keeping or demoting a rule.
 
-For experts and teams using Claude Code and Codex, it connects three decisions:
+**Offline by default.** T0/T1 analysis stays local. Optional `--t2` review sends claim
+text and a shape-only session digest through your agent CLI to its model provider;
+see [the disclosure](#t2-uses-your-quota).
+
+## Choose a distribution
+
+| Distribution | Available workflow | How to run | Node |
+|---|---|---|---|
+| [Published npm `0.3.0`](https://www.npmjs.com/package/harnessmeter/v/0.3.0) | Claude Code session analysis and reviewable demotion patches | `npx harnessmeter@0.3.0` | ≥ 20 |
+| This source branch — **unreleased** | Claude Code and Codex inventories, static audits, baselines and CI budgets; measured evidence where the provider supports it | `node /path/to/harnessmeter/src/cli.ts` | ≥ 22.18 |
+
+The npm badge describes the published package. It does not make source-only flags
+available in `0.3.0`. Publishing the new workflow requires a separately qualified release.
+
+From source, experts and teams using Claude Code and Codex can make three decisions:
 
 - **Onboard:** understand a repository's harness before any sessions exist.
 - **Review:** compare instruction changes against a committed baseline and enforce token budgets.
@@ -47,7 +61,7 @@ project's directory. There is no install or build step for source use, and no ru
 dependency. `bin/harnessmeter.js` prefers `dist/` when present; use `src/cli.ts` while
 developing to avoid running an older build.
 
-The released Claude workflow remains available with `npx harnessmeter` on Node **20 or
+The released Claude workflow remains available with `npx harnessmeter@0.3.0` on Node **20 or
 newer**. Publishing the new workflow requires a separately reviewed release; this change
 does not bump or publish a version.
 
