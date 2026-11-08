@@ -34,6 +34,9 @@ jobs:
       - name: test
         run: node --test "test/*.test.ts"
 
+      - name: verify shared report artwork
+        run: node scripts/generate-assets.ts --check
+
       - name: smoke — help
         run: node bin/harnessmeter.js --help
 

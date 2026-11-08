@@ -13,11 +13,80 @@ import { ident } from '../src/evidence-t2.ts';
 import type { Analysis, Claim, ClaimEvidence } from '../src/types.ts';
 import type { ReportContext } from '../src/report-html.ts';
 import type { BaselineClaim } from '../src/baseline.ts';
+import { REPORT_THEME } from '../src/report-theme.ts';
 
 // Written as char codes: a literal control character in the source makes git treat
 // this file as binary, and then nobody can review these assertions in a diff.
 const NUL = String.fromCharCode(0);
 const ESC = String.fromCharCode(27);
+
+test('every report navigation link has a rendered section target', () => {
+  const html = renderHtml(analysis());
+  for (const match of html.matchAll(/href="#([^"]+)"/g)) {
+    assert.ok(html.includes('id="' + match[1] + '"'), 'Missing target: ' + match[1]);
+  }
+});
+
+test('semantic report colors retain readable small text in both themes', () => {
+  const luminance = (hex: string) => {
+    const rgb = hex.slice(1).match(/../g)!.map((v) => parseInt(v, 16) / 255)
+      .map((v) => v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4);
+    return rgb[0] * 0.2126 + rgb[1] * 0.7152 + rgb[2] * 0.0722;
+  };
+  for (const theme of Object.values(REPORT_THEME)) {
+    for (const key of ['fg', 'mut', 'dim', 'amber', 'green', 'rust', 'blue', 'violet'] as const) {
+      for (const background of [theme.bg, theme.panel]) {
+        const values = [luminance(theme[key]), luminance(background)].sort((a, b) => a - b);
+        assert.ok((values[1] + 0.05) / (values[0] + 0.05) >= 4.5, `${key} on ${background}`);
+      }
+    }
+  }
+});
+
+test('both report denominators exclude unobservable slash commands', () => {
+  const c = claim({ alwaysOnTokens: 100 });
+  const command = claim({ id: 'command', kind: 'command', alwaysOnTokens: 900 });
+  const a = analysis({ claims: [c, command], harnessEstTokens: 1000, deadSharePct: 100,
+    evidence: new Map([
+      [c.id, { claimId: c.id, tier: 'T1', verdict: 'ballast', firedIn: 0, observedIn: 9, note: 'none' }],
+      [command.id, { claimId: command.id, tier: 'none', verdict: 'unproven', firedIn: 0, observedIn: 9, note: 'unobservable' }],
+    ]),
+  });
+  for (const output of [renderHtml(a), renderTerminal(a)]) {
+    const section = output.slice(output.indexOf('DEAD SHARE'), output.indexOf('LEASE LEDGER'));
+    assert.match(section, /100 eligible/);
+    assert.doesNotMatch(section, /of 1,000 tok/);
+  }
+});
+
+test('an inventory above the historical prompt never renders a false prefix composition', () => {
+  const a = analysis({ harnessEstTokens: 5000, medianPrefixTokens: 1000, residualTokens: 0 });
+  const html = renderHtml(a);
+  assert.match(html, /Current inventory exceeds the historical/);
+  assert.doesNotMatch(html, /class="flame"|500%|500\.0%/);
+  assert.match(renderTerminal(a), /unknown \(inventory exceeds historical prompt\)/);
+  assert.doesNotMatch(renderTerminal(a), /500%|other 0 tok/);
+});
+
+test('cache ratio uses the cache-compatible population in both reports', () => {
+  const a = analysis({ medianTurnsPerSession: 99, medianCacheTurnsPerSession: 10, medianPrefixWrites: 2, cacheTtl: '5m' });
+  assert.match(renderHtml(a), /10 turns per cache-compatible session/);
+  assert.match(renderTerminal(a), /10 turns\/cache-compatible session/);
+});
+
+test('the footer only offers T2 for measured Claude runs', () => {
+  assert.doesNotMatch(renderHtml(analysis({ provider: 'codex' })), /run with <code>--t2/);
+  assert.doesNotMatch(renderHtml(analysis({ sessionCount: 0 })), /run with <code>--t2/);
+  assert.match(renderHtml(analysis({ provider: 'claude' })), /run with <code>--t2/);
+});
+
+test('raw judge tokens are never advertised as financial payback', () => {
+  const a = analysis();
+  a.cost.tokens = 100;
+  a.proposals.push({ claimId: 'c1', label: 'Testing', action: 'demote', savingPerSession: 50,
+    receipt: { tier: 'T1', sessions: 40, firedIn: 0, class: 'workflow', protected: false, confidence: 'high', confidenceSource: 'zero-hit-bound', boundPct: 7.2 } });
+  for (const output of [renderHtml(a), renderTerminal(a)]) assert.doesNotMatch(output, /payback|pays for itself/);
+});
 
 function claim(over: Partial<Claim> = {}): Claim {
   return {

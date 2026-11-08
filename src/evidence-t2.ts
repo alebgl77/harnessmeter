@@ -170,7 +170,8 @@ export async function runT2(
   sessions: Session[],
   opts: RunT2Options,
 ): Promise<T2Result> {
-  const model = opts.model ?? 'sonnet';
+  const requestedModel = opts.model ?? (opts.agent.kind === 'claude' ? 'sonnet' : undefined);
+  const model = requestedModel ?? 'Codex configured default (unreported)';
   const out: T2Result = {
     verdicts: new Map(),
     calls: 0,
@@ -227,7 +228,7 @@ export async function runT2(
     out.attempts++;
     out.networkCalls = null;
     try {
-      res = await ask(opts.agent, prompt, { model });
+      res = await ask(opts.agent, prompt, { model: requestedModel });
     } catch {
       done += batch.claims.length;
       opts.onProgress?.(done, candidates.length);

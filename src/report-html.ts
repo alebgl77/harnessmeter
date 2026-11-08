@@ -1,9 +1,9 @@
 /** Self-contained HTML report. No network, no external assets, no fonts to fetch. */
 
 import type { Analysis, Claim, ClaimEvidence } from './types.ts';
-import type { compareBaselines } from './baseline.ts';
-import type { Budget } from './budget.ts';
-import { naiveRatio } from './pricing.ts';
+import { reportModel, type ReportContext } from './report-model.ts';
+import { REPORT_THEME_CSS } from './report-theme.ts';
+export type { ReportContext } from './report-model.ts';
 import { VERSION } from './version.ts';
 
 const esc = (s: string) =>
@@ -11,13 +11,6 @@ const esc = (s: string) =>
 const n = (x: number) => Math.round(x).toLocaleString('en-US');
 const delta = (x: number) => (x > 0 ? '+' : '') + n(x);
 const percent = (x: number) => (x > 0 ? '+' : '') + x.toLocaleString('en-US', { maximumSignificantDigits: 4 });
-
-export type ReportContext = {
-  comparison?: ReturnType<typeof compareBaselines>;
-  budget?: Budget;
-  /** Only for a generated fixture report, never inferred from user data. */
-  synthetic?: boolean;
-};
 
 const VERDICT_COLOR: Record<string, string> = {
   'load-bearing': 'var(--green)',
@@ -200,17 +193,7 @@ function comparisonReport(context: ReportContext): string {
 
 export function renderHtml(a: Analysis, context: ReportContext = {}): string {
   const coverage = a.telemetryCoverage;
-  const hasBilling = coverage.knownTurns > 0;
-  const hasSpend = hasBilling && a.spendKnown !== false && a.provider !== 'codex';
-  const hasEconomics = a.cacheEconomicsKnown !== false && a.provider !== 'codex' && coverage.cacheSessions > 0;
-  // Complete aggregate usage can coexist with a missing first-turn measurement.
-  const hasPrefix = coverage.prefixSessions > 0;
-  const hasBehavioralEvidence = a.sessionCount > 0 && a.evidenceFloorSessions > 0;
-  const canJudgeAbsence = hasBehavioralEvidence && a.absenceEvidenceKnown !== false && a.provider !== 'codex';
-  const providerName = a.provider === 'codex' ? 'Codex' : !a.provider && a.claims.some((claim) => claim.provider === 'codex') ? 'Multiple providers' : 'Claude Code';
-  const ratio = hasPrefix && hasEconomics
-    ? naiveRatio(a.medianTurnsPerSession, a.cacheTtl, a.medianPrefixWrites)
-    : undefined;
+  const { hasBilling, hasSpend, hasEconomics, hasPrefix, prefixComparable, canJudgeAbsence, providerName, deadShareTokens, cacheTurns, ratio } = reportModel(a);
   const saved = a.proposals.reduce((s, x) => s + x.savingPerSession, 0);
   const b = a.billedTokens;
 
@@ -219,25 +202,23 @@ export function renderHtml(a: Analysis, context: ReportContext = {}): string {
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>harnessmeter · ${providerName} report</title>
 <style>
-:root{--bg:#0B0E14;--panel:#11151D;--line:#1C232E;--fg:#E6EDF3;--mut:#8B949E;--dim:#8994A3;
---amber:#B8873B;--green:#4E9A6B;--rust:#A8503F;--blue:#4A7FA8;--violet:#7A6BA8}
-@media(prefers-color-scheme:light){:root{--bg:#FBFAF7;--panel:#fff;--line:#E4E0D8;--fg:#1A1D22;--mut:#5C6470;--dim:#667080}}
+${REPORT_THEME_CSS}
 *{box-sizing:border-box}
 [hidden]{display:none!important}
 body{margin:0;background:var(--bg);color:var(--fg);
-font:14px/1.6 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;padding:40px 24px}
+font:15px/1.6 system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;padding:40px 24px}
 main{max-width:1080px;margin:0 auto}
-h1{font-size:26px;margin:0 0 4px;letter-spacing:-.5px}
+h1{font:600 28px/1.3 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;margin:0 0 4px;letter-spacing:-.5px}
 h1 span{color:var(--amber)}
-h2{font-size:12px;letter-spacing:1.6px;color:var(--amber);margin:44px 0 14px;font-weight:600}
+h2{font-size:16px;letter-spacing:0;color:var(--amber);margin:44px 0 14px;font-weight:600}
 .sub{color:var(--mut);margin:0 0 32px}
 .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px}
 .card{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:16px}
-.k{color:var(--dim);font-size:11px;letter-spacing:1px;text-transform:uppercase}
-.v{font-size:24px;margin-top:6px}
+.k{color:var(--dim);font-size:13px}
+.v{font-size:26px;font-variant-numeric:tabular-nums;margin-top:6px;overflow-wrap:anywhere}
 .v small{font-size:12px;color:var(--mut)}
 .flame{display:flex;height:34px;border-radius:5px;overflow:hidden;border:1px solid var(--line);background:var(--panel)}
-.seg{height:100%}
+.seg{height:100%;flex-shrink:0}
 .legend{margin-top:14px;display:grid;gap:6px}
 .lg{display:grid;grid-template-columns:14px 1fr auto auto auto;gap:12px;align-items:center;font-size:13px}
 .sw{width:11px;height:11px;border-radius:2px}
@@ -258,7 +239,14 @@ th{text-align:left;color:var(--dim);font-weight:500;font-size:11px;letter-spacin
 text-transform:uppercase;padding:8px 10px;border-bottom:1px solid var(--line)}
 td{padding:9px 10px;border-bottom:1px solid var(--line);vertical-align:top}
 td.r,th.r{text-align:right}
-code{color:var(--fg)}
+code{color:var(--fg);overflow-wrap:anywhere}
+p{max-width:80ch}
+a{color:var(--blue)}
+.skip{position:absolute;left:-9999px}.skip:focus{position:static}
+.report-nav{display:flex;gap:10px 24px;flex-wrap:wrap;margin:20px 0 28px}
+.summary{display:flex;gap:14px 40px;flex-wrap:wrap;align-items:baseline;padding:20px 0;border-block:1px solid var(--line);margin:24px 0}
+.summary strong{font-size:30px;font-variant-numeric:tabular-nums}.summary span{color:var(--mut)}
+@media print{body{padding:0}.report-nav,.controls{display:none!important}.card,.note,.prop{break-inside:avoid}.scroll{overflow:visible}table{min-width:0;font-size:10px}}
 .muted,.lgn{color:var(--dim)}
 .tier{background:var(--line);padding:1px 6px;border-radius:3px;font-size:11px;color:var(--mut)}
 .inf{color:var(--amber);margin-left:3px;cursor:help}
@@ -274,14 +262,16 @@ border-radius:6px;padding:14px 16px;margin-bottom:10px}
 footer{margin-top:56px;color:var(--dim);font-size:11px;border-top:1px solid var(--line);padding-top:18px}
 .note{background:var(--panel);border:1px solid var(--line);border-left:3px solid var(--amber);
 border-radius:6px;padding:12px 16px;color:var(--mut);font-size:12.5px;margin:14px 0}
-</style></head><body><main>
+</style></head><body><a class="skip" href="#claims">Skip to claims</a><main>
 
 <h1>harness<span>meter</span></h1>
 ${context.synthetic ? '<div class="note" role="note"><strong>Synthetic demo</strong> — every project, claim, session and measurement below is fictional test data.</div>' : ''}
 <p class="sub">${providerName} · ${a.sessionCount === 0 ? 'Static inventory · ' : ''}${n(a.sessionCount)} sessions · ${n(a.turnCount)} turns · ${a.projects.length} project${a.projects.length === 1 ? '' : 's'} · ${esc(a.scannedAt.slice(0, 16).replace('T', ' '))}</p>
+<div class="summary"><div><strong>${n(a.harnessEstTokens)}</strong> <span>estimated resident tokens</span></div><div><strong>${a.claims.length}</strong> <span>claims inventoried</span></div><div><span>${a.sessionCount === 0 ? 'Behavioral evidence not evaluated' : coverage.status === 'full' ? 'Compatible session telemetry' : 'Incomplete session telemetry'}</span></div></div>
+<nav class="report-nav" aria-label="Report sections"><a href="#usage">Usage</a><a href="#context">Context</a><a href="#evidence">Evidence</a><a href="#claims">Claims</a><a href="#proposals">Proposals</a></nav>
 ${comparisonReport(context)}
 
-<h2>BILLED — ${coverage.status === 'full' ? 'MEASURED TOKENS' : coverage.status === 'partial' ? 'MEASURED SUBTOTAL' : 'UNKNOWN'}</h2>
+<h2 id="usage">BILLED — ${coverage.status === 'full' ? 'MEASURED TOKENS' : coverage.status === 'partial' ? 'MEASURED SUBTOTAL' : 'UNKNOWN'}</h2>
 <div class="grid">
   <div class="card"><div class="k">api-equivalent</div><div class="v">${hasSpend ? `$${a.spendUsd.toFixed(2)}<small> list price${coverage.status === 'partial' ? ' · measured subtotal' : ''}</small>` : 'unknown'}</div></div>
   <div class="card"><div class="k">input (uncached)</div><div class="v">${hasBilling ? n(b.input) : 'unknown'}</div></div>
@@ -300,30 +290,28 @@ ${hasSpend ? 'The dollar figure is the <strong>list-price value of these measure
       : ''
   }</div>
 
-<h2>CONTEXT — WHERE THE ALWAYS-ON PREFIX GOES</h2>
-${hasPrefix ? flamegraph(a) : '<div class="card"><div class="k">first-turn prompt / cache behavior</div><div class="v">unknown</div></div>'}
+<h2 id="context">CONTEXT — WHERE THE ALWAYS-ON PREFIX GOES</h2>
+${hasPrefix && !prefixComparable ? `<div class="note"><strong>Current inventory exceeds the historical first-turn prompt.</strong> ${n(a.harnessEstTokens)} estimated tokens versus ${n(a.medianPrefixTokens)} measured median tokens. Different dates, loading scopes or estimation error can explain the mismatch. A prefix breakdown and its unattributed remainder cannot be established.</div>` : hasPrefix ? flamegraph(a) : '<div class="card"><div class="k">first-turn prompt / cache behavior</div><div class="v">unknown</div></div>'}
 <div class="note">${hasPrefix && ratio !== undefined
-    ? `Median first-turn prompt is <strong>${n(a.medianPrefixTokens)} tokens</strong> — an <strong>upper bound</strong> on the resident prefix, because it also contains the opening user message. At ${a.medianTurnsPerSession} turns per session, prompt caching makes that prefix <strong>${ratio >= 1 ? ratio.toFixed(1) + '× cheaper' : (1 / ratio).toFixed(1) + '× more expensive'}</strong> than tokens × turns would suggest. This corpus writes the prefix <strong>${a.medianPrefixWrites}×</strong> per session at the <strong>${a.cacheTtl}</strong> rate. That count is measured per session, not assumed. The <strong>unattributed remainder</strong> cannot be tied to a harness file; its composition is unknown.${coverage.status === 'partial' ? ` Prefix/cache medians use ${coverage.cacheSessions}/${a.sessionCount} complete sessions.` : ''}`
+    ? `Median first-turn prompt is <strong>${n(a.medianPrefixTokens)} tokens</strong> — an <strong>upper bound</strong> on the resident prefix, because it also contains the opening user message. At ${cacheTurns} turns per cache-compatible session, prompt caching makes that prefix <strong>${ratio >= 1 ? ratio.toFixed(1) + '× cheaper' : (1 / ratio).toFixed(1) + '× more expensive'}</strong> than tokens × turns would suggest. This corpus writes the prefix <strong>${a.medianPrefixWrites}×</strong> per session at the <strong>${a.cacheTtl}</strong> rate. That count is measured per session, not assumed. ${prefixComparable ? 'The <strong>unattributed remainder</strong> cannot be tied to a harness file; its composition is unknown.' : 'The <strong>unattributed remainder</strong> is unknown because the current inventory exceeds the historical prompt.'}${coverage.status === 'partial' ? ` Prefix/cache medians use ${coverage.cacheSessions}/${a.sessionCount} complete sessions.` : ''}`
     : hasPrefix
-      ? `Median first-turn prompt is <strong>${n(a.medianPrefixTokens)} tokens</strong> — an <strong>upper bound</strong> that includes the opening user message. The <strong>unattributed remainder</strong> has unknown composition. Cache economics and proposal savings are <strong>unknown</strong>; no pricing assumptions from another provider are applied.`
+      ? `Median first-turn prompt is <strong>${n(a.medianPrefixTokens)} tokens</strong> — an <strong>upper bound</strong> that includes the opening user message. ${prefixComparable ? 'The <strong>unattributed remainder</strong> has unknown composition.' : 'The <strong>unattributed remainder</strong> is unknown because the current inventory exceeds the historical prompt.'} Cache economics and proposal savings are <strong>unknown</strong>; no pricing assumptions from another provider are applied.`
       : 'First-turn prompt and unattributed remainder are <strong>unknown</strong>: no session has complete compatible usage telemetry. Harness-file sizes remain estimates. Cache economics are unavailable.'}</div>
 
-<h2>DEAD SHARE</h2>
+<h2 id="evidence">DEAD SHARE</h2>
 <div class="card"><div class="k">of attributed harness context, with no observable consequence</div>
-<div class="v" style="color:${!canJudgeAbsence ? 'var(--mut)' : a.deadSharePct > 50 ? 'var(--rust)' : a.deadSharePct > 25 ? 'var(--amber)' : 'var(--green)'}">${canJudgeAbsence ? `${a.deadSharePct.toFixed(0)}%<small> of ${n(a.harnessEstTokens)} tok</small>` : 'not evaluated'}</div></div>
+<div class="v" style="color:${!canJudgeAbsence ? 'var(--mut)' : a.deadSharePct > 50 ? 'var(--rust)' : a.deadSharePct > 25 ? 'var(--amber)' : 'var(--green)'}">${canJudgeAbsence ? `${a.deadSharePct.toFixed(0)}%<small> of ${n(deadShareTokens)} eligible tok</small>` : 'not evaluated'}</div></div>
 <div class="note">${!canJudgeAbsence
     ? `Inventory footprint: <strong>${n(a.harnessEstTokens)} estimated resident tokens</strong>. An unevaluated dead share is not a zero or a clean bill of health.`
-    : hasPrefix
-    ? `This percentage is scoped to the context we can attribute to a file — ${n(a.harnessEstTokens)} tokens, or ${a.medianPrefixTokens > 0 ? ((a.harnessEstTokens / a.medianPrefixTokens) * 100).toFixed(0) : '0'}% of your ${n(a.medianPrefixTokens)}-token prefix. The remaining ${n(a.residualTokens)} tokens are unattributed — harnessmeter cannot tie them to a file or see inside them, so they are <strong>not</strong> counted as either live or dead. Reporting one number as if it covered the whole prefix would be the exact error this tool exists to correct.`
-    : `This percentage is scoped only to the estimated ${n(a.harnessEstTokens)} tokens attributable to harness files. Their share of the prefix and the unattributed remainder are <strong>unknown</strong>.`}</div>
+    : `This percentage uses <strong>${n(deadShareTokens)} eligible estimated resident tokens</strong>. The full inventory contains ${n(a.harnessEstTokens)} estimated tokens; commands with unobservable invocations are excluded from this denominator. ${prefixComparable ? `Eligible claims represent ${((deadShareTokens / a.medianPrefixTokens) * 100).toFixed(0)}% of the historical ${n(a.medianPrefixTokens)}-token first-turn prompt. Its ${n(a.residualTokens)}-token unattributed remainder is not judged.` : 'The share of the historical prefix and the unattributed remainder are unknown.'}` }</div>
 <div class="note">${!canJudgeAbsence
     ? a.sessionCount === 0 ? '<strong>Behavioral evidence not evaluated.</strong> This inventory measures file sizes, not whether instructions are useful. No sessions were supplied.' : '<strong>Absence is not evaluated.</strong> Available observations cannot establish that an unused claim is unnecessary. Positive evidence and prevention protection remain visible in the ledger.'
     : `<strong>Resolution.</strong> ${a.evidenceFloorSessions} of the ${n(a.sessionCount)} sessions read can testify about this project's claims. A claim that never fired can only be shown to load less than <strong>${a.evidenceFloorPct < 10 ? a.evidenceFloorPct.toFixed(1) : a.evidenceFloorPct.toFixed(0)}%</strong> of the time, at 95% confidence. ${a.evidenceFloorPct > 50 ? 'That is too thin to condemn anything at T0/T1. Rerun with <code>--all</code>, or come back after more sessions.' : 'The bound describes this observed corpus, not a guarantee about future tasks.'}`}</div>
 
-<h2>LEASE LEDGER</h2>
+<h2 id="claims">LEASE LEDGER</h2>
 ${ledger(a)}
 
-<h2>PROPOSALS</h2>
+<h2 id="proposals">PROPOSALS</h2>
 ${proposals(a, hasEconomics)}
 <div class="note">Nothing here is applied automatically. Prevention-class claims are excluded from eviction entirely: a prevention rule looks useless precisely because it works, so observational evidence can never condemn it.</div>
 
@@ -336,11 +324,10 @@ ${proposals(a, hasEconomics)}
   ${a.cost.attempts > 0 && a.cost.usd === null && a.cost.costResponses > 0 ? `<div><span>measured subtotal</span><strong>$${a.cost.measuredCostUsd.toFixed(3)} <small style="color:var(--dim)">(${a.cost.costResponses}/${a.cost.calls} responses)</small></strong></div>` : ''}
   ${a.cost.attempts > 0 ? `<div><span>claims judged at T2</span><strong>${a.cost.judged ?? 0} <small style="color:var(--dim)">via ${esc(a.cost.model ?? '')}, your own quota</small></strong></div>` : ''}
   <div><span>proposals would save</span><strong style="color:${!hasEconomics ? 'var(--amber)' : 'var(--green)'}">${!hasEconomics ? 'saving unknown' : saved > 0 ? '~' + n(saved) + ' eff tok / session' : '—'}</strong></div>
-  ${hasEconomics && a.cost.tokens !== null && a.cost.tokens > 0 && saved > 0 ? `<div><span>payback</span><strong style="color:var(--green)">${a.cost.tokens / saved < 1 ? 'first session' : '~' + Math.ceil(a.cost.tokens / saved) + ' sessions'}</strong></div>` : ''}
 </div>
 
 <footer>
-harnessmeter ${VERSION} · evidence tiers reached in this run: ${a.cost.tier === 'T0/T1/T2' ? 'T0 (presence), T1 (consequence), T2 (judgement)' : 'T0 (presence), T1 (consequence) — run with <code>--t2</code> to escalate unproven claims'}.
+harnessmeter ${VERSION} · ${a.cost.tier === 'T0/T1/T2' ? 'T0 (presence), T1 (consequence), T2 (judgement)' : a.provider === 'codex' ? 'T0 (presence), T1 (consequence). T2 is unavailable for the Codex profile' : a.sessionCount === 0 ? 'T0 inventory. Behavioral evidence is not evaluated without compatible sessions' : 'T0 (presence), T1 (consequence). You can run with <code>--t2</code> to escalate unproven claims'}.
 T3 natural experiments and T4 field randomisation are not in this release.<br>
 ${coverage.status === 'full' ? 'Compatible session token counts are measured.' : coverage.status === 'partial' ? `Session token counts are a measured subtotal covering ${coverage.knownTurns}/${coverage.totalTurns} turns.` : 'Session-level token figures are unknown.'} Dollar values use list-price estimates when available; unavailable pricing or cache semantics remain unknown. Per-claim token counts are calibrated estimates at
 ~3.8 chars/token and are labelled as such wherever shown.

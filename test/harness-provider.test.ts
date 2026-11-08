@@ -96,8 +96,16 @@ test('project-only excludes linked home skills, while aliased project skills are
   write(path.join(outside, 'SKILL.md'), skill('external'));
   const inside = path.join(cwd, '.agents', 'skills', 'original');
   write(path.join(inside, 'SKILL.md'), skill('original'));
-  fs.symlinkSync(outside, path.join(cwd, '.agents', 'skills', 'outside'), 'junction');
-  fs.symlinkSync(inside, path.join(cwd, '.agents', 'skills', 'alias'), 'junction');
+  try {
+    fs.symlinkSync(outside, path.join(cwd, '.agents', 'skills', 'outside'), 'junction');
+    fs.symlinkSync(inside, path.join(cwd, '.agents', 'skills', 'alias'), 'junction');
+  } catch (error) {
+    if (process.platform === 'win32' && ['EPERM', 'EACCES'].includes((error as NodeJS.ErrnoException).code ?? '')) {
+      t.skip('This Windows environment does not permit junction creation');
+      return;
+    }
+    throw error;
+  }
   const reads: string[] = [];
   const scan = scanHarness(cwd, { provider: 'codex', includeUser: false, readFile(file) {
     reads.push(file);

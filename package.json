@@ -15,7 +15,8 @@
     "CHANGELOG.md",
     "CONTRIBUTING.md",
     "SECURITY.md",
-    "docs"
+    "docs",
+    "assets/*.svg"
   ],
   "engines": {
     "node": ">=20"
@@ -26,6 +27,8 @@
     "bench:ci": "node bench/run.ts",
     "typecheck": "tsc --noEmit",
     "build": "tsc -p tsconfig.build.json",
+    "assets": "node scripts/generate-assets.ts",
+    "assets:check": "node scripts/generate-assets.ts --check",
     "prepare": "npm run build"
   },
   "keywords": [

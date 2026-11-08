@@ -44,7 +44,7 @@ harnessmeter ${VERSION} — price the leases your context window is carrying
   --max-growth <pct>      fail if growth exceeds this percentage; requires --baseline
 
   --t2               escalate unproven claims to your local agent for judgement
-  --t2-model <m>     model for T2 (default: sonnet)
+  --t2-model <m>     T2 model (Claude: sonnet; Codex CLI: configured default)
   --yes              skip the T2 confirmation prompt
 
   --help / --version
@@ -125,7 +125,8 @@ async function confirmT2(candidates: number, model: string, auto: boolean): Prom
   process.stderr.write(
     `\n  T2 will ask your local agent to judge ${candidates} unproven claim${candidates === 1 ? '' : 's'} (model: ${model}).\n` +
       `  It sends: the claim text, and turn counts plus tool-call tallies from sampled sessions.\n` +
-      `  It does not send: message content, file contents, or file paths.\n` +
+      `  It does not send transcript message text or full source files as separate context.\n` +
+      `  Claim text can contain sensitive information or paths. The agent may load its own context.\n` +
       `  This uses your own quota. Cost is reported when it finishes.\n`,
   );
   if (auto) {
@@ -267,8 +268,8 @@ async function main() {
           '\n  T2 needs a local agent CLI on PATH (looked for `claude`, `codex`). Skipping.\n',
         );
       } else {
-        const model = args.t2Model ?? 'sonnet';
-        if (await confirmT2(candidates.length, model, args.yes)) {
+        const model = args.t2Model ?? (agent.kind === 'claude' ? 'sonnet' : undefined);
+        if (await confirmT2(candidates.length, model ?? 'Codex configured default (unreported)', args.yes)) {
           process.stderr.write('  judging');
           t2 = await runT2(candidates, prepared.bodies, sessions, {
             agent,

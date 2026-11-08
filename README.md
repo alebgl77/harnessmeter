@@ -119,6 +119,15 @@ Reports show measured subtotals when telemetry is incomplete. An unknown value i
 displayed as a free bill or proof that an instruction was unused. Reports and JSON can
 expose local paths and harness structure: review them before sharing.
 
+The dead-share denominator excludes commands whose invocations cannot be observed.
+When today's estimated inventory exceeds the historical first-turn prompt, the report
+discloses the mismatch instead of drawing a prefix breakdown above 100%. Estimated token
+savings are not financial payback or a guarantee of better task performance.
+
+Report colors and SVG artwork share `src/report-theme.ts`. After changing the palette,
+run `npm run assets`; CI checks that the SVGs remain in sync. The social PNG is a raster
+export of `assets/social-preview.svg` and must be refreshed when that source changes.
+
 ## What is measured
 
 Per-claim token sizes are estimates at roughly **3.8 characters per token**. Skills contribute

@@ -24,7 +24,7 @@ const DAY_ONE = '2026-01-10T12:00:00';
 const DAY_TWO = '2026-06-20T12:00:00';
 
 function git(cwd: string, args: string[], date?: string): void {
-  execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@e', ...args], {
+  execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@e', '-c', 'commit.gpgsign=false', ...args], {
     cwd,
     stdio: 'ignore',
     env: date ? { ...process.env, GIT_AUTHOR_DATE: date, GIT_COMMITTER_DATE: date } : process.env,

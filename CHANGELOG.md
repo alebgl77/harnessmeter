@@ -8,6 +8,22 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 These changes are available from source and have not been published as a new npm version.
 
+### Coherence audit
+
+- Share report availability and cache populations between terminal and HTML output.
+  Expose `deadShareTokens` and `medianCacheTurnsPerSession` in analysis JSON so the
+  displayed denominator and cache ratio match the actual calculations.
+- Disclose inventory/prefix mismatches without drawing percentages above 100%; remove
+  financial payback claims based on incompatible token units and unsupported T2 advice.
+- Respect the selected model when the T2 judge uses Codex; disclose its configured
+  default as unreported instead of labelling it Sonnet. Align the confirmation text
+  with the documented claim-text disclosure.
+- Unify report and repository artwork colors, improve light/dark text contrast, add
+  report navigation and a footprint summary, and replace outdated measurement artwork.
+  Include the referenced SVGs in the npm package and verify generated artwork in CI.
+- Isolate history fixtures from personal Git signing and explicitly skip unavailable
+  Windows junction fixtures rather than failing before the behavior under test runs.
+
 ### Added
 
 - Explicit `--provider claude|codex` profiles. Codex discovers the supported `AGENTS.md`

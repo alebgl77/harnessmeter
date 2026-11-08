@@ -45,7 +45,7 @@ body:
     id: node
     attributes:
       label: Node version
-      description: '`node --version` — harnessmeter needs 22.18 or newer'
+      description: '`node --version` - compiled npm package: Node 20+; source checkout and tests: Node 22.18+'
       placeholder: v22.18.0
     validations:
       required: true

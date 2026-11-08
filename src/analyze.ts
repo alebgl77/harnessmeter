@@ -11,6 +11,7 @@ import { alwaysOnCost, isKnownModel, turnCostUsd } from './pricing.ts';
 import { confidenceFor, runEvidence, zeroHitUpperBound } from './evidence.ts';
 import { scanHarness, type HarnessScanOptions, type HarnessSnapshot } from './harness.ts';
 import type { T2Result } from './evidence-t2.ts';
+import { deadShareClaims } from './claim-metrics.ts';
 
 function median(xs: number[]): number {
   if (xs.length === 0) return 0;
@@ -130,14 +131,12 @@ export function analyze(
   // ---- dead share, over the part we can actually attribute ---------------------------
   let deadTokens = 0;
   let attributableTokens = 0;
-  for (const c of claims) {
-    if (c.alwaysOnTokens <= 0) continue;
+  for (const c of deadShareClaims({ claims, evidence })) {
     const ev = evidence.get(c.id);
     // A claim nothing can ever rule against belongs in neither half of this fraction.
     // Slash commands are the case: an invocation lives in the user's message, which we do
     // not read, so they are permanently unproven. Leaving them in the denominator alone
     // would quietly shrink the dead share by however many commands the user has installed.
-    if (ev?.tier === 'none' && ev.verdict === 'unproven' && c.kind === 'command') continue;
     attributableTokens += c.alwaysOnTokens;
     if (ev?.verdict === 'ballast') deadTokens += c.alwaysOnTokens;
   }
@@ -259,10 +258,12 @@ export function analyze(
     spendUsd,
     billedTokens: billed,
     medianPrefixTokens,
+    prefixBreakdownKnown: prefixSessions.length > 0 && harnessEstTokens <= medianPrefixTokens,
     unknownModels: [...unknown].sort(),
     harnessEstTokens,
     residualTokens,
     medianTurnsPerSession,
+    medianCacheTurnsPerSession: medianCacheTurns,
     medianPrefixWrites,
     cacheTtl,
     models,
@@ -270,6 +271,7 @@ export function analyze(
     evidence,
     proposals,
     deadSharePct,
+    deadShareTokens: attributableTokens,
     // The weakest population any claim was judged against, not the largest. Under --all
     // a project claim is judged only against its own project's sessions, and quoting the
     // whole corpus would advertise a resolution those claims do not have.
