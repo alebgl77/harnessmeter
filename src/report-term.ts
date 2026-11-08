@@ -1,8 +1,7 @@
 /** Terminal report. The thing people screenshot. */
 
 import type { Analysis } from './types.ts';
-import type { ReportContext } from './report-html.ts';
-import { naiveRatio } from './pricing.ts';
+import { reportModel, type ReportContext } from './report-model.ts';
 import { VERSION } from './version.ts';
 
 const useColor = process.stdout.isTTY && !process.env.NO_COLOR;
@@ -25,13 +24,7 @@ export function renderTerminal(a: Analysis, context: ReportContext = {}): string
   const L: string[] = [];
   const p = (s = '') => L.push(s);
   const coverage = a.telemetryCoverage;
-  const hasBilling = coverage.knownTurns > 0;
-  const hasSpend = hasBilling && a.spendKnown !== false && a.provider !== 'codex';
-  const hasEconomics = a.cacheEconomicsKnown !== false && a.provider !== 'codex' && coverage.cacheSessions > 0;
-  // Complete aggregate usage can coexist with a missing first-turn measurement.
-  const hasPrefix = coverage.prefixSessions > 0;
-  const canJudgeAbsence = a.sessionCount > 0 && a.evidenceFloorSessions > 0 && a.absenceEvidenceKnown !== false && a.provider !== 'codex';
-  const providerName = a.provider === 'codex' ? 'Codex' : !a.provider && a.claims.some((claim) => claim.provider === 'codex') ? 'Multiple providers' : 'Claude Code';
+  const { hasBilling, hasSpend, hasEconomics, hasPrefix, prefixComparable, canJudgeAbsence, providerName, deadShareTokens, eligibleClaims, cacheTurns, ratio } = reportModel(a);
 
   p();
   p(`  ${bold('harnessmeter')} ${dim(VERSION)} · ${providerName}${a.sessionCount === 0 ? ' · static inventory' : ''}`);
@@ -90,9 +83,6 @@ export function renderTerminal(a: Analysis, context: ReportContext = {}): string
   p();
 
   // ---- prefix ------------------------------------------------------------------
-  const ratio = hasPrefix && hasEconomics
-    ? naiveRatio(a.medianTurnsPerSession, a.cacheTtl, a.medianPrefixWrites)
-    : undefined;
   const prefixStatus = hasPrefix
     ? `measured in ${coverage.prefixSessions}/${a.sessionCount} sessions — an upper bound`
     : 'unknown — no measured first-turn prompt';
@@ -102,10 +92,10 @@ export function renderTerminal(a: Analysis, context: ReportContext = {}): string
     p(`    median first turn     ${n(a.medianPrefixTokens).padStart(12)} tok`);
     p(`    ${dim('includes the opening user message, which cannot be separated')}`);
     p(`    ${grey('├─ harness files')}      ${grey(n(a.harnessEstTokens).padStart(12) + ' tok  (estimated)')}`);
-    p(`    ${grey('└─ unattributed')}       ${grey(n(a.residualTokens).padStart(12) + ' tok  (composition unknown)')}`);
+    p(`    ${grey('└─ unattributed')}       ${grey(prefixComparable ? n(a.residualTokens).padStart(12) + ' tok  (composition unknown)' : 'unknown (inventory exceeds historical prompt)')}`);
     p();
     if (ratio !== undefined) {
-    p(`    ${dim(`at ${a.medianTurnsPerSession} turns/session, prompt caching makes the prefix`)}`);
+    p(`    ${dim(`at ${cacheTurns} turns/cache-compatible session, prompt caching makes the prefix`)}`);
     // Once a session writes its prefix often enough, caching stops being a discount. Rare,
     // but printing "0.9x cheaper" would be nonsense rather than a small number.
     p(`    ${dim(ratio >= 1
@@ -124,17 +114,16 @@ export function renderTerminal(a: Analysis, context: ReportContext = {}): string
   p();
 
   // ---- dead share --------------------------------------------------------------
-  const attributable = a.claims.filter((x) => x.alwaysOnTokens > 0);
   const attributedPct =
-    a.medianPrefixTokens > 0 ? (a.harnessEstTokens / a.medianPrefixTokens) * 100 : 0;
+    a.medianPrefixTokens > 0 ? (deadShareTokens / a.medianPrefixTokens) * 100 : 0;
   p(`  ${amber('DEAD SHARE')}  ${dim(`of the harness context we can attribute`)}`);
   p();
   const pct = a.deadSharePct;
   const col = pct > 50 ? rust : pct > 25 ? amber : green;
   p(canJudgeAbsence ? `    ${col(bar(pct / 100))}  ${bold(pct.toFixed(0) + '%')}` : `    ${grey('not evaluated')}`);
-  p(`    ${grey(`of ${n(a.harnessEstTokens)} tok across ${attributable.length} claims`)}`);
+  p(`    ${grey(`of ${n(deadShareTokens)} eligible tok across ${eligibleClaims} claims`)}`);
   p();
-  if (hasPrefix) {
+  if (prefixComparable) {
     p(`    ${dim(`scope: those claims are ${attributedPct.toFixed(0)}% of your ${n(a.medianPrefixTokens)}-tok prefix.`)}`);
     p(`    ${dim(`the other ${n(a.residualTokens)} tok is unattributed and not judged here.`)}`);
   } else {
@@ -252,12 +241,6 @@ export function renderTerminal(a: Analysis, context: ReportContext = {}): string
     p(`    analysis cost         ${green('0 tokens')} ${dim('(no model call, no network)')}`);
   }
   p(`    proposals would save  ${!hasEconomics ? amber('saving unknown') : saved > 0 ? green(`~${n(saved)} eff tok/session`) : dim('—')}`);
-  if (hasEconomics && a.cost.tokens !== null && a.cost.tokens > 0 && saved > 0) {
-    const payback = a.cost.tokens / saved;
-    p(
-      `    ${dim(`pays for itself after ${payback < 1 ? 'the first session' : `~${Math.ceil(payback)} sessions`}`)}`,
-    );
-  }
   p();
 
   return L.join('\n');

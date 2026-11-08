@@ -236,6 +236,8 @@ export type Analysis = {
   };
   /** Median first-turn prompt across sessions — an upper bound on the resident prefix. */
   medianPrefixTokens: number;
+  /** False means residualTokens is a placeholder, not a composable prefix remainder. */
+  prefixBreakdownKnown?: boolean;
   /**
    * Models seen in the transcripts whose rate we do not know. Their turns are priced at a
    * fallback rate, so any dollar figure is an estimate rather than a reading whenever this
@@ -255,6 +257,8 @@ export type Analysis = {
    */
   residualTokens: number;
   medianTurnsPerSession: number;
+  /** Same complete cache-compatible population used to estimate proposal savings. */
+  medianCacheTurnsPerSession?: number;
   /**
    * Median number of times per session the resident prefix was written to the cache.
    * Every always-on figure in this report is priced against this, not against an assumed
@@ -268,6 +272,8 @@ export type Analysis = {
   evidence: Map<string, ClaimEvidence>;
   proposals: Proposal[];
   deadSharePct: number;
+  /** Denominator of deadSharePct; excludes commands whose invocation is unobservable. */
+  deadShareTokens?: number;
   /**
    * The resolution of this scan: the tightest firing rate a claim that never fired can be
    * shown to be under, at 95% confidence, given how many sessions were read.

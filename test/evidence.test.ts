@@ -131,11 +131,13 @@ function fakeT2Agent(
 ): {
   agent: { kind: 'claude' | 'codex'; bin: string };
   prompts: () => string[];
+  argv: () => string[][];
   cleanup: () => void;
 } {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'harnessmeter-t2-'));
   const name = `harnessmeter-t2-${process.pid}-${Math.random().toString(36).slice(2, 8)}`;
   const capture = path.join(root, 'prompts.jsonl');
+  const argvCapture = path.join(root, 'argv.jsonl');
   const counter = path.join(root, 'counter.txt');
   const script = path.join(root, 'agent.mjs');
   fs.writeFileSync(
@@ -146,6 +148,7 @@ process.stdin.setEncoding('utf8');
 process.stdin.on('data', (chunk) => { prompt += chunk; });
 process.stdin.on('end', () => {
   fs.appendFileSync(${JSON.stringify(capture)}, JSON.stringify(prompt) + '\\n');
+  fs.appendFileSync(${JSON.stringify(argvCapture)}, JSON.stringify(process.argv.slice(2)) + '\\n');
   const index = fs.existsSync(${JSON.stringify(counter)}) ? Number(fs.readFileSync(${JSON.stringify(counter)}, 'utf8')) : 0;
   fs.writeFileSync(${JSON.stringify(counter)}, String(index + 1));
   const mode = ${JSON.stringify(responses)}[index] ?? 'known';
@@ -193,6 +196,7 @@ process.stdin.on('end', () => {
   process.env.PATH = `${root}${path.delimiter}${previousPath ?? ''}`;
   return {
     agent: { kind, bin: name },
+    argv: () => fs.existsSync(argvCapture) ? fs.readFileSync(argvCapture, 'utf8').trim().split('\n').filter(Boolean).map((line) => JSON.parse(line)) : [],
     prompts: () =>
       fs.existsSync(capture)
         ? fs.readFileSync(capture, 'utf8').trim().split('\n').filter(Boolean).map((line) => JSON.parse(line))
@@ -486,6 +490,18 @@ test('T2 skips an empty project population without asking and still reports prog
   } finally {
     fake.cleanup();
   }
+});
+
+test('Codex judge respects an explicit model override without a network call', async () => {
+  const fake = fakeT2Agent('', 'medium', false, undefined, [], 'codex');
+  try {
+    const c = claim();
+    const result = await runT2([c], new Map([[c.id, 'Rule']]), [session('mine', [turn(['Read'])])], {
+      agent: fake.agent, currentProject: 'mine', model: 'fixture-model',
+    });
+    assert.equal(result.model, 'fixture-model');
+    assert.deepEqual(fake.argv(), [['exec', '-', '--model', 'fixture-model']]);
+  } finally { fake.cleanup(); }
 });
 
 test('a successful Codex judgement reports calls but leaves unexposed telemetry unknown', async () => {

@@ -32,6 +32,7 @@ build/
 *.tgz
 coverage/
 *.tsbuildinfo
+graphify-out/
 .npmrc
 
 # ── OS / editor ──────────────────────────────────────────────────────

@@ -176,6 +176,7 @@ export async function ask(
 
   if (agent.kind === 'codex') {
     const args = ['exec', '-'];
+    if (opts.model) args.push('--model', opts.model);
     const raw = await run(agent.bin, args, prompt, timeoutMs);
     return { text: raw };
   }

@@ -454,6 +454,7 @@ test('a slash command is in neither half of the dead share', () => {
   );
   // 100 of 100 attributable tokens are dead; the command's 900 count for neither side.
   assert.equal(a.deadSharePct, 100);
+  assert.equal(a.deadShareTokens, 100);
 });
 
 test('an unpriced model is named and a synthetic one is not', () => {

@@ -145,6 +145,9 @@ The existing analysis fields are retained with these additive CLI fields:
 | `telemetryCoverage` | `status` (`full`, `partial`, `none`), known/total turns, and prefix/cache session counts |
 | `spendKnown`, `cacheEconomicsKnown` | Availability indicators; `false` prohibits interpreting placeholder values as measurements |
 | `absenceEvidenceKnown` | Whether the observation channel supports absence inference; this does not establish that any sessions were observed |
+| `deadShareTokens` | Estimated tokens in the denominator of `deadSharePct`; excludes commands with unobservable invocations |
+| `prefixBreakdownKnown` | `false` when no compatible prompt is measured or the current inventory exceeds it; `residualTokens` must then be treated as unavailable |
+| `medianCacheTurnsPerSession` | Median turns in the complete cache-compatible sessions used for savings and cache ratios |
 
 `baseline.comparison.growthPercent` and the growth check's `actual` are `null` for unbounded
 growth from zero. `harnessEstTokens` is estimated. Legacy numeric fields can contain zero
@@ -176,6 +179,9 @@ controlled quality experiments.
 `--t2` and `--patch` are available only for the Claude profile. Explicit `--static` rejects
 both; a no-session fallback cannot create absence-based proposals or invoke T2. T2 is an
 opt-in model call through a local agent and can spend quota; see [the disclosure](../SECURITY.md).
+The judge CLI is separate from the transcript profile. Claude defaults to `sonnet`; a
+Codex judge uses its configured default, reported as unreported, unless `--t2-model`
+explicitly selects a model. The override is passed to either CLI.
 Patches are proposals only, with separate project and user roots. Review the receipt and
 generated skill trigger before applying the printed command; the tool never applies it.
 
